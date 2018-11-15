@@ -1,9 +1,10 @@
 colorscheme badwolf " awesome colorscheme
 set background=dark " sets dark mode
 syntax enable           " enable syntax processing
-set tabstop=4       " number of visual spaces per TAB
-"set softtabstop=4   " number of spaces in tab when editing
-"set expandtab       " tabs are spaces
+"set tabstop=4       " number of visual spaces per TAB
+set softtabstop=4   " number of spaces in tab when editing
+set shiftwidth=4    " this should fix my double tabbing problem
+set expandtab       " tabs are spaces
 set number              " show line numbers
 set showcmd             " show command in bottom bar
 set cursorline          " highlight current line
@@ -34,3 +35,13 @@ else
     let &t_EI = "\<Esc>]50;CursorShape=0\x7"
 endif
 
+call plug#begin('~/.vim/plugged')
+    Plug 'scrooloose/nerdtree'
+call plug#end()
+
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+" Extension Configs
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+" Nerdtree
+map <leader>n :NERDTreeToggle<CR>
