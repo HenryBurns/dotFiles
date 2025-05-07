@@ -14,12 +14,13 @@ chsh -s $(which zsh)
 sh -c "$(wget -O- https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
 # cp -t ~/ .zshrc .zshrc.pre-oh-my-zsh 
 
-
 #######
 # VIM #
 #######
 cp .vimrc ~/
 mkdir -p ~/.vim/colors/
 wget https://raw.githubusercontent.com/sjl/badwolf/refs/heads/master/colors/badwolf.vim -O ~/.vim/colors/badwolf.vim
+curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
+    https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
 
 source ~/.zshrc
