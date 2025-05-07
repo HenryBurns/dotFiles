@@ -16,30 +16,24 @@ ZSH_THEME="robbyrussell"
 # If set to an empty array, this variable will have no effect.
 # ZSH_THEME_RANDOM_CANDIDATES=( "robbyrussell" "agnoster" )
 
+# Setup history file to ignore spaces / duplicates.
+setopt HIST_IGNORE_ALL_DUPS HIST_IGNORE_SPACE APPEND_HISTORY
+HISTFILE=~/.zsh_history
+HISTSIZE=1000
+SAVEHIST=$HISTSIZE
+
 # Uncomment the following line to use case-sensitive completion.
-# CASE_SENSITIVE="true"
+CASE_SENSITIVE="false"
 
 # Uncomment the following line to use hyphen-insensitive completion.
 # Case-sensitive completion must be off. _ and - will be interchangeable.
-# HYPHEN_INSENSITIVE="true"
-
-# Uncomment the following line to disable bi-weekly auto-update checks.
-# DISABLE_AUTO_UPDATE="true"
-
-# Uncomment the following line to change how often to auto-update (in days).
-# export UPDATE_ZSH_DAYS=13
-
-# Uncomment the following line to disable colors in ls.
-# DISABLE_LS_COLORS="true"
-
-# Uncomment the following line to disable auto-setting terminal title.
-# DISABLE_AUTO_TITLE="true"
+HYPHEN_INSENSITIVE="true"
 
 # Uncomment the following line to enable command auto-correction.
-# ENABLE_CORRECTION="true"
+ENABLE_CORRECTION="true"
 
 # Uncomment the following line to display red dots whilst waiting for completion.
-# COMPLETION_WAITING_DOTS="true"
+COMPLETION_WAITING_DOTS="true"
 
 # Uncomment the following line if you want to disable marking untracked files
 # under VCS as dirty. This makes repository status check for large repositories
@@ -76,6 +70,9 @@ source $ZSH/oh-my-zsh.sh
 # export LANG=en_US.UTF-8
 
 # Preferred editor for local and remote sessions
+export EDITOR='vim'
+export GIT_EDITOR=$EDITOR
+export SVN_EDITOR=$EDITOR
 # if [[ -n $SSH_CONNECTION ]]; then
 #   export EDITOR='vim'
 # else
@@ -96,3 +93,23 @@ source $ZSH/oh-my-zsh.sh
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
+if [ -f ~/.bash_aliases ]; then
+    . ~/.bash_aliases
+fi
+
+export ZSH_COMPDUMP=$ZSH/cache/.zcompdump-$HOST
+source $ZSH/oh-my-zsh.sh
+
+# check is ssh-agent running and socket is valid
+check-ssh-agent() {
+    [ -S "$SSH_AUTH_SOCK" ] && { ssh-add -l >& /dev/null || [ $? -ne 2 ]; }
+}
+[ -S $HOME/.ssh/ssh_auth_sock ] && export SSH_AUTH_SOCK=$HOME/.ssh/ssh_auth_sock
+ 
+# if socket or agent is not valid/running create ssh-agent with socket from env variable
+check-ssh-agent || eval "$(ssh-agent -s -a ${SSH_AUTH_SOCK})"
+
+export PATH=$PATH:/u/hburns/bin
+export PATH=$PATH:/u/hburns/.local/bin
+export PATH=$PATH:$HOME/apps/go/bin:$HOME/go/bin
+export PATH=$PATH:/usr/local/go/bin
