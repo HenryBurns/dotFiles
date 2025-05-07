@@ -14,6 +14,9 @@ set lazyredraw          " redraw only when we need to.
 set showmatch           " highlight matching [{()}]
 set incsearch           " search as characters are entered
 set hlsearch            " highlight matches
+set cc=120              " highlight column 120
+set textwidth=120       " wrap text at 120
+
 " turn off search highlight
 nnoremap <leader><space> :nohlsearch<CR>
 set foldenable          " enable folding
@@ -36,6 +39,7 @@ else
 endif
 
 call plug#begin('~/.vim/plugged')
+    Plug 'wfxr/protobuf.vim' " Proto file indentation.
     Plug 'scrooloose/nerdtree'
 call plug#end()
 
