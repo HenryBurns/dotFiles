@@ -21,3 +21,5 @@ sh -c "$(wget -O- https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools
 cp .vimrc ~/
 mkdir -p ~/.vim/colors/
 wget https://raw.githubusercontent.com/sjl/badwolf/refs/heads/master/colors/badwolf.vim -O ~/.vim/colors/badwolf.vim
+
+source ~/.zshrc
