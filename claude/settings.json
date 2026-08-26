@@ -1,0 +1,68 @@
+{
+  "env": {
+    "BASH_ENV": "__HOME__/.claude/bash_env.sh"
+  },
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash(ls:*)",
+      "Bash(cd:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(sed:*)",
+      "Bash(cut:*)",
+      "Bash(echo:*)",
+      "Bash(find:*)",
+      "Bash(git log:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git merge-base:*)",
+      "Bash(git grep:*)",
+      "Bash(git cat-file:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git rev-list:*)",
+      "Bash(git describe:*)",
+      "Bash(git name-rev:*)",
+      "Bash(git for-each-ref:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(git blame:*)",
+      "Bash(git shortlog:*)",
+      "Bash(git worktree list:*)",
+      "Bash(printf:*)",
+      "Bash(printenv:*)",
+      "Bash(hostname:*)",
+      "Bash(uptime:*)",
+      "Bash(who:*)",
+      "Bash(tr:*)",
+      "Bash(zstdgrep:*)",
+      "Bash(awk:*)",
+      "Bash(wc:*)",
+      "Bash(sort:*)"
+    ]
+  },
+  "worktree": {
+    "baseRef": "head"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/bash-write-guard.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "theme": "dark"
+}

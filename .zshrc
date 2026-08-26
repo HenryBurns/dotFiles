@@ -1,9 +1,14 @@
 # If you come from bash you might have to change your $PATH.
 # export PATH=$HOME/bin:/usr/local/bin:$PATH
 
+# Disable the stupid auto-logout (TMOUT=900 from /etc/profile.d/tmout.sh).
+# bash marks it readonly, but that attribute doesn't survive the exec into zsh
+# from .bash_profile -- here it's a plain exported var, so unset just works.
+unset TMOUT
+
 # Path to your oh-my-zsh installation.
-  export ZSH="~/.oh-my-zsh"
- RPROMPT='${ret_status}%{$fg_bold[blue]%} %D %T % %{$reset_color%}'
+export ZSH="$HOME/.oh-my-zsh"
+RPROMPT='${ret_status}%{$fg_bold[blue]%} %D %T % %{$reset_color%}'
  # Set name of the theme to load --- if set to "random", it will
 # load a random theme each time oh-my-zsh is loaded, in which case,
 # to know which specific one was loaded, run: echo $RANDOM_THEME
@@ -99,17 +104,27 @@ fi
 
 export ZSH_COMPDUMP=$ZSH/cache/.zcompdump-$HOST
 source $ZSH/oh-my-zsh.sh
+[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"
 
-# check is ssh-agent running and socket is valid
-check-ssh-agent() {
-    [ -S "$SSH_AUTH_SOCK" ] && { ssh-add -l >& /dev/null || [ $? -ne 2 ]; }
-}
-[ -S $HOME/.ssh/ssh_auth_sock ] && export SSH_AUTH_SOCK=$HOME/.ssh/ssh_auth_sock
- 
-# if socket or agent is not valid/running create ssh-agent with socket from env variable
-check-ssh-agent || eval "$(ssh-agent -s -a ${SSH_AUTH_SOCK})"
+# The agent is a systemd --user unit (ssh-agent.service) on a fixed socket at
+# ~/.ssh/ssh_auth_sock, so tools that cannot read the environment can hardcode it.
+#
+# A tmux pane keeps whatever SSH_AUTH_SOCK it inherited when it was created, so that socket
+# dangles once the connection that spawned the pane closes. Fall back to the local agent only
+# when the inherited one is genuinely unreachable - a working forwarded agent still wins.
+if [[ -n "$TMUX" ]]; then
+    ssh-add -l >/dev/null 2>&1
+    # rc 2 = cannot reach an agent; rc 0/1 = reachable (1 only means it holds no keys)
+    [[ $? -eq 2 ]] && export SSH_AUTH_SOCK="$HOME/.ssh/ssh_auth_sock"
+fi
 
-export PATH=$PATH:/u/hburns/bin
-export PATH=$PATH:/u/hburns/.local/bin
+export PATH=$PATH:$HOME/bin
+export PATH=$PATH:$HOME/.local/bin
 export PATH=$PATH:$HOME/apps/go/bin:$HOME/go/bin
 export PATH=$PATH:/usr/local/go/bin
+
+# For tmux yank
+export DISPLAY=:0.0
+
+# Machine-specific: work paths, tool wrappers, per-host exports. Untracked.
+[ -f ~/.zshrc.local ] && source ~/.zshrc.local

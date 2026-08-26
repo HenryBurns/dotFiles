@@ -1,0 +1,10 @@
+# Worktrees where bash-write-guard.py stands down.
+#
+# One absolute path per line. Blank lines and # comments ignored.
+# An entry only takes effect if the path is a real linked git worktree, so
+# naming a main checkout here does nothing.
+#
+# Empty file = guard active everywhere (the safe default).
+#
+# Example:
+#   /home/you/work/scratch-checkout

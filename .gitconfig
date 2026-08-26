@@ -5,13 +5,14 @@
 [core]
     editor = vim
     ignorecase = true
+    excludesfile = ~/.gitignore_global
 [color]
     ui = auto
 [log]
     date = local
     decorate = short
 [rerere]
-    enabled = true
+    enabled = false
 [pull]
     rebase = true
 [merge]
@@ -22,5 +23,11 @@
     lg = log --color --graph --pretty=format:'%C(bold white)%h%Creset -%C(bold green)%d%Creset %s %C(bold green)(%cr)%Creset %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative
     llg = log --color --graph --pretty=format:'%C(bold white)%H %d%Creset%n%s%n%+b%C(bold blue)%an <%ae>%Creset %C(bold green)%cr (%ci)' --abbrev-commit
     alias = !git config --list | grep 'alias\\.' | sed 's/alias\\.\\([^=]*\\)=\\(.*\\)/\\1\\\t => \\2/' | sort
+    pushfwl = push --force-with-lease
 [init]
     defaultBranch = main
+
+# Identity, work-specific aliases and any host tweaks. Untracked; a missing
+# file here is not an error, so this is safe on a fresh machine.
+[include]
+    path = ~/.gitconfig.local

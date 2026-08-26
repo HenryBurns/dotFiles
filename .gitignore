@@ -1,1 +1,39 @@
+# This repo is a PUBLIC mirror. Anything matched here must never be committed.
+
+# Written by the oh-my-zsh installer from whatever .zshrc it displaced.
 .zshrc.pre-oh-my-zsh
+
+# --- Claude Code: the deliberately-local half -------------------------------
+# Site-specific grants and internal test names. See claude/README.md.
+claude/hooks/local_grants.py
+claude/hooks/allowed-blueprints
+# Session state, transcripts, command history, OAuth credentials.
+claude/.credentials.json
+claude/history.jsonl
+claude/projects/
+claude/sessions/
+claude/session-env/
+claude/file-history/
+claude/todos/
+claude/backups/
+claude/ide/
+claude/statsig/
+claude/shell-snapshots/
+claude/__pycache__/
+claude/**/__pycache__/
+
+# --- machine-specific overrides, sourced by the tracked dotfiles ------------
+*.local
+.gitconfig.local
+.zshrc.local
+.vimrc.local
+.bash_aliases.local
+
+# --- secrets, generally -----------------------------------------------------
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+.netrc
+.env
+*.tgz
