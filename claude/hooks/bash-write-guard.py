@@ -107,6 +107,32 @@ ALWAYS_ASK = {
     "node": "runs arbitrary code", "php": "runs arbitrary code",
     "sh": "runs arbitrary code", "bash": "runs arbitrary code",
     "zsh": "runs arbitrary code", "ksh": "runs arbitrary code",
+    # -- command wrappers ---------------------------------------------------
+    # These take another command as their arguments, so argv0_of reports the
+    # wrapper and every write check below it looks at the wrong word:
+    # `timeout 30 rm -rf x` produced no reasons at all. Unwrapping instead
+    # would mean knowing each wrapper's own flag arity, and guessing that wrong
+    # is how you mistake the real command for a flag value. Refuse to guess.
+    "timeout": "runs another command the guard cannot attribute",
+    "nice": "runs another command the guard cannot attribute",
+    "ionice": "runs another command the guard cannot attribute",
+    "chrt": "runs another command the guard cannot attribute",
+    "taskset": "runs another command the guard cannot attribute",
+    "stdbuf": "runs another command the guard cannot attribute",
+    "setsid": "runs another command the guard cannot attribute",
+    "flock": "runs another command the guard cannot attribute",
+    "watch": "runs another command the guard cannot attribute",
+    "script": "records the session to a file",
+    "xargs": "runs another command the guard cannot attribute",
+    "env": "runs another command the guard cannot attribute",
+    "nohup": "runs another command the guard cannot attribute",
+    "time": "runs another command the guard cannot attribute",
+    "command": "runs another command the guard cannot attribute",
+    # -- privilege escalation ------------------------------------------------
+    "sudo": "runs another command as another user",
+    "doas": "runs another command as another user",
+    "su": "runs another command as another user",
+    "runuser": "runs another command as another user",
 }
 
 # ---------------------------------------------------------------------------
@@ -573,6 +599,13 @@ def substitution_spans(text):
     escapes the backslash and IS one.
     """
     spans, index, quote, depth, start = [], 0, None, 0, None
+    # Quote state to restore when each `$(` closes. A substitution opens a
+    # FRESH quoting context: in `"$(... '(a)' ...)"` the single quotes are
+    # significant again, even though the `$(` itself sat inside double quotes.
+    # Carrying the outer `"` inwards makes `'` look ordinary, so a `)` inside
+    # single quotes closes the substitution early and everything after it is
+    # misread.
+    quote_stack = []
     while index < len(text):
         char = text[index]
         if quote == "'":
@@ -599,10 +632,13 @@ def substitution_spans(text):
             if depth == 0:
                 start = index
             depth += 1
+            quote_stack.append(quote)
+            quote = None
             index += 2
             continue
         if char == ")" and depth:
             depth -= 1
+            quote = quote_stack.pop()
             if depth == 0:
                 spans.append((start, index + 1))
                 start = None
@@ -804,6 +840,14 @@ _CASES = [
     ("ask",    'echo "$(echo "$(dd of=/tmp/f)")"'),
     ("ask",    'printf "$(grep -c "a->b" f)" > /tmp/out'),
     ("silent", "$(echo ls) -la"),                 # substitution as the command
+    # `$(` opens a fresh quoting context. Inside "$( ... )" a single quote is
+    # significant again, so '(none)' is literal text -- carrying the outer `"`
+    # inwards made that `)` close the substitution early and mangled the rest.
+    ("allow",  'echo "$(grep -oE \'x[0-9]+\' f || echo \'(none)\')"'),
+    ("allow",  'printf "%s %s" "$(git log -1 "$s")" "$(git log -2 "$s" | cut -c1-9)"'),
+    ("ask",    'echo "$(tee /tmp/f || echo \'(none)\')"'),
+    # ...and a substitution that is only literal text stays inert.
+    ("silent", "echo '$(rm -rf /)'"),
 
     # -- constructs the guard cannot see through must ASK, never go silent -
     ("ask",    "echo `tee /tmp/f`"),              # backticks hide the write
@@ -830,9 +874,11 @@ _CASES = [
     ("silent", "F=/tmp; ls $F"),                         # assignment (phase 2)
     ("silent", "export PATH=x; ls"),
     ("silent", "eval ls"),
-    ("silent", "xargs rm"),
-    ("silent", "sudo ls"),
-    ("silent", "env FOO=1 ls"),
+    # these three were "silent" until command wrappers joined ALWAYS_ASK;
+    # "ask" is the stronger verdict, so the expectation moved, not the code
+    ("ask",    "xargs rm"),
+    ("ask",    "sudo ls"),
+    ("ask",    "env FOO=1 ls"),
     ("silent", "( echo x )"),
 
     # -- ALWAYS_ASK: none of these are allowlisted, so they would prompt on
@@ -871,6 +917,24 @@ _CASES = [
     # REFUSED_WORDS stays deliberately blunt -- it is not gated on command
     # position, so the word anywhere means the guard declines to reason at all.
     ("silent", "grep -n while f"),
+
+    # -- command wrappers hide the real argv0 from every write check ---------
+    # Safe today only because none are allowlisted; allowlisting `timeout`
+    # would have let `timeout 30 rm -rf x` through with no prompt at all,
+    # because nothing about it needs a grant.
+    ("ask",    "timeout 30 rm -rf /tmp/x"),
+    ("ask",    "nice rm -rf /tmp/x"),
+    ("ask",    "stdbuf -o0 rm -rf /tmp/x"),
+    ("ask",    "setsid rm -rf /tmp/x"),
+    ("ask",    "flock /tmp/l rm -rf /tmp/x"),
+    ("ask",    "watch rm -rf /tmp/x"),
+    ("ask",    "env rm -rf /tmp/x"),
+    ("ask",    "sudo rm -rf /tmp/x"),
+    ("ask",    "timeout 30 curl -s -o /dev/null https://example.invalid"),
+    ("ask",    'for u in a b; do timeout 5 curl -s "$u"; done'),
+    # the wrapper name as an argument is still just an argument
+    ("silent", "grep -n timeout f"),
+    ("silent", "git log --oneline --grep=timeout"),
 
     # -- allowlisted git subcommands are not unconditionally read-only -----
     ("ask",    "git diff --output=/tmp/d HEAD~1"),
