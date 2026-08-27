@@ -147,7 +147,11 @@ def split_segments(command, guard):
             current.append(token)
     if current:
         segments.append(current)
-    return [" ".join(seg) for seg in segments]
+    # Token LISTS, not joined strings. Joining here and re-splitting later tore
+    # quoted arguments back into words, so `echo "=== repo size / maintenance
+    # ==="` reported a phantom out-of-workspace path `/` -- sending the reader
+    # after a path problem that does not exist. Join only to display or match.
+    return segments
 
 
 def match(text, rules):
@@ -194,25 +198,26 @@ def main():
 
     roots = guard.workspace_roots(cwd)
     segments = split_segments(command, guard)
-    width = min(max((len(s) for s in segments), default=10), 52)
+    rendered = [" ".join(seg) for seg in segments]
+    width = min(max((len(s) for s in rendered), default=10), 52)
     print(f"{'segment':<{width}}  verdict")
     print("-" * (width + 26))
-    for segment in segments:
-        shown = segment if len(segment) <= width else segment[:width - 2] + ".."
-        denied, dsource = match(segment, deny)
+    for segment, text in zip(segments, rendered):
+        shown = text if len(text) <= width else text[:width - 2] + ".."
+        denied, dsource = match(text, deny)
         if denied:
             verdict = f"DENIED by Bash({denied}) [{dsource}]"
-            blockers.append(f"{segment.split()[0]}: denied")
+            blockers.append(f"{segment[0]}: denied")
         else:
-            hit, source = match(segment, prefix)
+            hit, source = match(text, prefix)
             if hit:
                 verdict = f"ok   Bash({hit}:*) [{source}]"
             else:
                 verdict = "NO RULE MATCHES"
-                blockers.append(f"{segment.split()[0]}: no rule")
+                blockers.append(f"{segment[0]}: no rule")
         print(f"{shown:<{width}}  {verdict}")
 
-        stray = guard.outside_workspace(segment.split(), roots)
+        stray = guard.outside_workspace(segment, roots)
         if stray:
             print(f"{'':<{width}}  ^ OUTSIDE WORKSPACE: {', '.join(stray)}")
             blockers.append(f"path outside workspace: {stray[0]}")
