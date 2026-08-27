@@ -35,6 +35,9 @@ FILES = [
     "hooks/bash-write-guard.py",
     "hooks/unguarded-worktrees",
     "tools/why-prompt.py",
+    # The only portable skill. The rest of ~/.claude/skills is workplace
+    # tooling, so skills are published one path at a time, never as a tree.
+    "skills/write-guard/SKILL.md",
 ]
 
 # Named so the omission is a decision on the record, not an oversight.
@@ -43,6 +46,8 @@ SKIP = {
     "hooks/allowed-blueprints": "internal test-blueprint names",
     "CLAUDE.md": "workplace build, branch and release conventions",
     "tools/share-perms.sh": "bundles the two files above",
+    "skills/ (except write-guard)": "workplace build, test, ticket and review "
+                                    "conventions",
     ".credentials.json": "OAuth credentials -- never leaves the machine",
     "history.jsonl": "every command run, verbatim",
     "projects/": "full session transcripts and per-project memory",

@@ -16,12 +16,16 @@ installing. Hook files are re-read on every command and need no restart.
 
 ## Why a prompt happens
 
-Two independent gates, and **both** must pass or you get a prompt:
+Two independent gates. Both must pass, or you get a prompt:
 
 1. **The command** matches an allow rule. In a compound command *every* segment
    must match — one uncovered segment prompts the whole line.
 2. **Every path it touches** is inside the workspace: the project directory or
    `permissions.additionalDirectories`.
+
+One exception, and it is the write guard's whole leverage: a hook returning
+`allow` bypasses **both** gates, which is how a verified read-only compound can
+read a path outside the workspace. Nothing else overrides gate 2.
 
 Gate 2 is the one that wastes time, because it looks identical to a missing
 rule. `ls -la ~/.bashrc` prompts even with `Bash(ls:*)` allowed, because it
@@ -68,16 +72,24 @@ never to `allow`.
 
 ### Tests
 
-97 cases live in the file itself: `bash-write-guard.py --test`. They pin, among
-others, two live bugs found the hard way — a nested `"` inside `$(...)` making
-`img->$f` parse as a redirect, and `shlex` treating `#` as a comment anywhere so
-that `for c in a; do echo hi#; rm -rf x; done` verified as safe while bash still
-ran the `rm`.
+The cases live in the file itself and print their own count:
+`bash-write-guard.py --test`. Every fix adds the command that was mishandled, so
+the suite is a list of real defects rather than invented inputs. Among them: a
+nested `"` inside `$(...)` making `img->$f` parse as a redirect; `shlex` treating
+`#` as a comment anywhere, so `for c in a; do echo hi#; rm -rf x; done` verified
+as safe while bash still ran the `rm`; an unquoted newline collapsing a compound
+so that a trailing `rm -rf` was never examined; and a raised exception exiting
+non-zero with no stdout, which a `PreToolUse` hook treats as non-blocking — the
+guard was fail-*open* until `_decide()` and `_fail_closed_ok()` closed it.
 
-Two known gaps are asserted at their *current* behaviour rather than hidden, so
-closing one fails the suite as a reminder. Both are the same shape: a
-write-capable flag reaching an allowlisted tool through data the guard cannot
-read (`for f in -i; do sed $f x; done`).
+Gaps that cannot be closed yet go in `_GAPS`, asserted at their *current*
+behaviour rather than hidden, so closing one fails the suite as a reminder. The
+list is empty at present; the mechanism stays because the next gap wants writing
+down, not discovering twice.
+
+`skills/write-guard/SKILL.md` carries the rules for changing any of this — the
+`ask`/`allow`/`silent` contract, what a new check must obey, and what "done"
+means.
 
 ## What is deliberately absent
 
