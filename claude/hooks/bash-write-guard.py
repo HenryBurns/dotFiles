@@ -234,10 +234,11 @@ def safe_assignment(name, value):
     # This is the backstop for whatever the two lists above failed to name.
     if name in os.environ:
         return False
-    # A value that came from $(...) is not a literal, so none of the reasoning
-    # above about word splitting and globbing applies to it.
-    if SUBST_PLACEHOLDER in value:
-        return False
+    # A value from $(...) arrives as the placeholder, which passes SAFE_VALUE.
+    # That is deliberate: it is recorded as-is, so `$n` later carries the
+    # placeholder and the flag-sensitive check catches `sed $n f` while
+    # `printf "$n"` is left alone. The substitution's own commands are verified
+    # separately, by analyze recursing into the span.
     return (bool(value) and not value.startswith("-")
             and bool(SAFE_VALUE.match(value)))
 
@@ -259,7 +260,17 @@ def safe_loop_word(word):
     """
     if SUBST_PLACEHOLDER in word:
         return True
-    return bool(SAFE_VALUE.match(word))
+    # A word may legitimately contain spaces -- `for s in "namespace os76"`.
+    # The loop still iterates over the WORDS (two items there, not three); the
+    # splitting that matters happens later, if the BODY uses `$s` unquoted,
+    # where `namespace os76` becomes two arguments. So the hazard is a piece
+    # that could arrive as a flag, not the whitespace itself -- which makes
+    # judging the pieces exact where rejecting all whitespace was merely
+    # conservative. `a -i` still refuses, on its second piece.
+    pieces = word.split()
+    return bool(pieces) and all(
+        not piece.startswith("-") and SAFE_VALUE.match(piece)
+        for piece in pieces)
 
 
 def expand_known(token, assignments):
@@ -1042,7 +1053,7 @@ def strip_substitutions(text, spans):
     return text
 
 
-def analyze(text, prefix, deny, depth):
+def analyze(text, prefix, deny, depth, roots=()):
     """(permitted, needs_grant) over every command position in `text`.
 
     Recurses into $(...), which introduces command positions no prefix rule
@@ -1058,7 +1069,8 @@ def analyze(text, prefix, deny, depth):
         return False, False
 
     for start, end in spans:
-        inner_ok, _ = analyze(text[start + 2:end - 1], prefix, deny, depth + 1)
+        inner_ok, _ = analyze(text[start + 2:end - 1], prefix, deny,
+                              depth + 1, roots)
         if not inner_ok:
             return False, False
 
@@ -1081,10 +1093,19 @@ def analyze(text, prefix, deny, depth):
             return False, False
         if segment_reasons(segment):
             return False, False
-        permitted, was_pb = segment_permitted(segment, prefix, deny)
+        permitted, was_local = segment_permitted(segment, prefix, deny)
         if not permitted:
             return False, False
-        needs_grant = needs_grant or was_pb
+        needs_grant = needs_grant or was_local
+        # A path outside the workspace is a reason to speak up. Reads there are
+        # wanted -- the point of this hook is to gate WRITES -- but the path
+        # gate prompts for them, and it reads a leading-slash sed address like
+        # `/addr/,/^}/p` as an absolute path. Granting suppresses that prompt
+        # and costs nothing: a command matching an allow rule is already
+        # permitted by the rules, and find_reasons runs first, so anything
+        # write-capable has already become "ask" before we get here.
+        if roots and outside_workspace(segment, roots):
+            needs_grant = True
     return True, needs_grant
 
 
@@ -1098,7 +1119,8 @@ def grant_verdict(command, cwd):
     rules.
     """
     prefix, _, deny = collect_rules(cwd)
-    permitted, needs_grant = analyze(command, prefix, deny, 0)
+    permitted, needs_grant = analyze(command, prefix, deny, 0,
+                                     workspace_roots(cwd))
     return permitted and needs_grant
 
 
@@ -1167,11 +1189,15 @@ _TEST_RULES = [(pattern, "test") for pattern in (
 )]
 
 
+_TEST_ROOTS = ("/workspace",)
+
+
 def _verdict(command):
     """What the hook would emit for this command: ask / allow / silent."""
     if find_reasons(command):
         return "ask"
-    permitted, needs_grant = analyze(command, _TEST_RULES, [], 0)
+    permitted, needs_grant = analyze(command, _TEST_RULES, [], 0,
+                                     _TEST_ROOTS)
     return "allow" if permitted and needs_grant else "silent"
 
 
@@ -1243,7 +1269,9 @@ _CASES = [
     ("silent", "grep -n '`' f"),
     ("silent", "echo 'use `cmd` here'"),
     ("silent", 'grep -c "(" f'),
-    ("silent", 'sed -n "/a(/,/b)/p" f'),
+    # the sed address is read as an absolute path by the path gate, so the
+    # guard grants to suppress a prompt for what is only a read
+    ("allow",  'sed -n "/a(/,/b)/p" f'),
     ("silent", "awk '{print $1}' f"),
 
     # -- control flow ------------------------------------------------------
@@ -1315,7 +1343,18 @@ _CASES = [
     ("silent", 'L="a b"; cat $L'),                        # would word-split
     ("ask",    "L=-i; sed $L f"),                         # would become a flag
     ("silent", "L=*.c; ls $L"),                           # would glob
-    ("silent", 'L=$(cat /tmp/p); cat "$L"'),              # not a literal
+    # a value from $(...) is opaque, not forbidden: recorded as the placeholder
+    # so a flag-sensitive command refuses it and everything else is fine
+    ("allow",  'L=$(cat /tmp/p); cat "$L"'),
+    ("ask",    'n=$(cat flags); sed $n f'),
+    ("ask",    'n=$(cat flags); sed "$n" f'),      # quoting is no defence here
+    ("ask",    'n=$(cat flags); sort $n a b'),
+    ("allow",  'n=$(grep -c foo f); printf "%s\n" "$n"'),
+    ("allow",  'n=$(wc -l f); echo "lines: $n"'),
+    # a loop word may contain spaces; the pieces are what must not be flags
+    ("allow",  'for s in "namespace os76" "register_elide"; do grep -c -F "$s" f; done'),
+    ("allow",  'for s in "ftl::for_each" "label::SLOW"; do grep -rIl -F "$s" k t; done'),
+    ("allow",  '''for s in "namespace os76" "a b"; do n=$(grep -c -F "$s" f); printf "%-20s %s\n" "$s" "$n"; done'''),
     ("silent", "L=; cat $L"),                             # empty
     # the value is substituted in, so the real command is what gets judged
     ("ask",    'L=/tmp/x; rm "$L"'),
@@ -1456,6 +1495,17 @@ _CASES = [
     ("silent", "grep -n foo f | head -3"),
     ("silent", "cat f | wc -l"),
 
+    # -- out-of-workspace reads --------------------------------------------
+    # Reads outside the workspace are wanted; the path gate prompts for them.
+    # Granting suppresses that, and adds no write risk: the command already
+    # matches an allow rule, and anything write-capable became "ask" earlier.
+    ("allow",  "ls -d /etc"),
+    ("allow",  "cd /workspace\nsed -n '/GatewayError.*Corrupt/,/^}/p' f | head -10"),
+    ("allow",  'grep -c foo /etc/hosts'),
+    ("ask",    "rm -rf /etc/x"),               # write anywhere still asks
+    ("ask",    "tee /etc/x"),
+    ("silent", "curl -s /etc/hosts"),          # not allowlisted -> rules decide
+
     # -- newlines separate commands -----------------------------------------
     # shlex treats a newline as whitespace under whitespace_split, so two
     # commands on two lines collapsed into one whose argv0 was the FIRST one.
@@ -1466,7 +1516,8 @@ _CASES = [
     ("ask",    'echo "$(echo hi)"\nsed -i s/a/b/ f'),
     ("ask",    "grep -n x f\ntee /tmp/out"),
     ("allow",  'cd /tmp\nF=/tmp/x.log\necho "=== size ==="; wc -l $F'),
-    ("silent", "ls -la\nls -l /tmp"),          # nothing needing a grant
+    ("silent", "ls -la\nls -l sub/dir"),      # in-workspace: nothing to say
+    ("allow",  "ls -la\nls -l /tmp"),         # /tmp is outside -> grant
     # a newline inside quotes is data, and a backslash-newline joins lines
     ("silent", 'echo "line1\nline2"'),
     ("silent", "grep -c 'a\nb' f"),
