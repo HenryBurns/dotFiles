@@ -123,47 +123,18 @@ def collect_rules(cwd):
     return prefix, exact, deny
 
 
-def substitutions(command):
-    """Find $(...), `...`, and <(...) that the shell would actually expand.
-
-    A prefix rule cannot cover these: the leading word says `sed`, but the
-    embedded command runs first and is never matched against anything. Inside
-    single quotes nothing expands, so those occurrences are literal text.
-    """
-    found, index, quote = [], 0, None
-    while index < len(command):
-        char = command[index]
-        if quote == "'":
-            if char == "'":
-                quote = None
-        elif quote == '"':
-            if char == "\\":
-                index += 2
-                continue
-            if char == '"':
-                quote = None
-            elif command.startswith("$(", index):
-                found.append("$(...)")
-            elif char == "`":
-                found.append("`...`")
-        else:
-            if char in "'\"":
-                quote = char
-            elif command.startswith("$(", index):
-                found.append("$(...)")
-            elif command.startswith("<(", index) or command.startswith(">(", index):
-                found.append("<(...) process substitution")
-            elif char == "`":
-                found.append("`...`")
-        index += 1
-    return list(dict.fromkeys(found))
-
-
 def split_segments(command, guard):
-    # Use the guard's tokenizer so the two cannot disagree -- notably on '#',
-    # which shlex would otherwise treat as a comment and silently truncate.
+    """Segments as the guard sees them, not as the raw text reads.
+
+    Substitutions are replaced by a placeholder and literal `for` loops and
+    assignments are expanded first, exactly as bash-write-guard.py does. Doing
+    it any other way prints segments the guard never judged -- a nested quote
+    inside $(...) used to surface here as a bogus `>` redirect.
+    """
+    spans = guard.substitution_spans(command)
+    text = command if spans is None else guard.strip_substitutions(command, spans)
     try:
-        tokens = guard.tokenize(command)
+        tokens, _ = guard.expand(guard.tokenize(text))
     except ValueError as exc:
         raise SystemExit(f"could not parse command: {exc}")
     segments, current = [], []
@@ -204,12 +175,16 @@ def main():
 
     blockers = []
 
-    embedded = substitutions(command)
-    if embedded:
-        print(f"command substitution: {', '.join(embedded)}")
-        print("  -> prefix rules cannot cover this; the embedded command runs")
-        print("     first and is never matched. Expect a prompt regardless of")
-        print("     what the leading word is.\n")
+    spans = guard.substitution_spans(command)
+    if spans is None:
+        print("command substitution: a form the guard will not read -- a "
+              "backtick,\n  <(...), or an unbalanced quote. That always asks.\n")
+        blockers.append("opaque substitution")
+    elif spans:
+        print(f"command substitution: {len(spans)} x $(...)")
+        print("  -> no prefix rule can ever match one. The write-guard hook")
+        print("     grants it when every command inside is read-only and")
+        print("     allowlisted; otherwise this prompts.\n")
         blockers.append("command substitution")
 
     for pattern, source in exact:

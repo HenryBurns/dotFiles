@@ -152,45 +152,140 @@ REFUSED_WORDS = {
     "read", "mapfile", "readarray", "xargs", "env", "nohup", "sudo", "time",
 }
 
-GLOB_CHARS = "*?["
+# Commands where a single flag flips read into write, so an argument the guard
+# cannot see through is a real hazard: `sed $(echo -i) s/a/b/ f` edits in place
+# while every check above tests the token, not what it expands to. A flag has
+# to start a token, so only an argument that BEGINS with an expansion can
+# become one -- `sed -n "1,$(echo 5)p" f` never can.
+FLAG_SENSITIVE = {"sed", "sort", "find"} | AWK_LIKE
+
+# ---------------------------------------------------------------------------
+# Variable assignments
+# ---------------------------------------------------------------------------
+
+ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.DOTALL)
+
+# A value is accepted only if every character is in this set and it does not
+# begin with `-`. That is precisely what makes a later unquoted `$L` equivalent
+# to the literal: no whitespace to word-split on, no glob character to expand,
+# and no leading dash to be read as a flag. So the guard can substitute the
+# value in and reason about the real command.
+SAFE_VALUE = re.compile(r"^[A-Za-z0-9_@%+:,./=~-]+$")
+
+# Names the shell -- or a tool the shell runs -- consults to decide WHAT gets
+# executed or HOW. These are the reason assignments were refused outright:
+# `GIT_EXTERNAL_DIFF=rm git diff` runs rm through an allowlisted `git diff`,
+# and LD_PRELOAD injects code into every child process.
+UNSAFE_VAR_NAMES = {
+    "PATH", "IFS", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "CDPATH",
+    "GLOBIGNORE", "PROMPT_COMMAND", "HOME", "PWD", "OLDPWD", "TMPDIR",
+    "SHELL", "TERM", "TERMINFO", "EDITOR", "VISUAL", "PAGER", "MANPAGER",
+    "LESS", "LESSOPEN", "LESSCLOSE", "AWKPATH", "AWKLIBPATH", "LOCPATH",
+    "NLSPATH", "HOSTALIASES", "POSIXLY_CORRECT", "TZ",
+}
+UNSAFE_VAR_PREFIXES = (
+    "LD_", "DYLD_", "BASH_", "GIT_", "PYTHON", "PERL", "NODE_", "RUBY",
+    "GEM_", "JAVA_", "JDK_", "LC_", "LANG", "SSH_", "SSL_", "CURL_", "GPG_",
+    "GNUPG", "PS", "PROXY", "HTTP_", "HTTPS_", "FTP_", "NO_",
+)
+
+_VAR_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 
-def substitutions(command):
-    """Find $(...), `...`, <(...) the shell would actually expand.
+def safe_assignment(name, value):
+    """True if `NAME=value` cannot change what runs or how it runs."""
+    upper = name.upper()
+    if upper in UNSAFE_VAR_NAMES:
+        return False
+    if any(upper.startswith(prefix) for prefix in UNSAFE_VAR_PREFIXES):
+        return False
+    # Anything already in the environment is load-bearing for something on this
+    # machine, and reassigning it can change behaviour the guard cannot see.
+    # This is the backstop for whatever the two lists above failed to name.
+    if name in os.environ:
+        return False
+    # A value that came from $(...) is not a literal, so none of the reasoning
+    # above about word splitting and globbing applies to it.
+    if SUBST_PLACEHOLDER in value:
+        return False
+    return (bool(value) and not value.startswith("-")
+            and bool(SAFE_VALUE.match(value)))
 
-    Single-quoted occurrences are literal text and are ignored.
+
+def safe_loop_word(word):
+    """True if a `for` word is a bare literal that cannot arrive as a flag.
+
+    The same rule as a safe assignment value, for the same reason: the body
+    sees `sed $f`, and every flag check runs against the token `$f` rather than
+    against what it expands to. `for f in -i; do sed $f x; done` was therefore
+    granted as a read-only sed and then edited the file in place.
+
+    Whitespace is excluded too, not only a leading dash -- an unquoted `$f`
+    word-splits, so `for f in "a -i"` smuggles the flag out of a single word.
+
+    The substitution placeholder stays accepted on purpose: refusing it would
+    also refuse `for sha in $(git rev-list ...)`. That remains a documented gap
+    rather than an oversight.
     """
-    found, index, quote = [], 0, None
-    while index < len(command):
-        char = command[index]
+    if SUBST_PLACEHOLDER in word:
+        return True
+    return bool(SAFE_VALUE.match(word))
+
+
+def expand_known(token, assignments):
+    """Substitute variables whose literal value was recorded; leave the rest."""
+    if "$" not in token or not assignments:
+        return token
+    return _VAR_REF.sub(
+        lambda m: assignments.get(m.group(1) or m.group(2), m.group(0)), token)
+
+
+def newlines_to_separators(text):
+    """Replace unquoted newlines with `;`.
+
+    shlex treats a newline as ordinary whitespace under whitespace_split, so
+    two commands on two lines collapsed into ONE. `echo "$(echo hi)"` followed
+    by `rm -rf x` became a single command whose argv0 is echo: the rm was read
+    as an argument, the segment matched Bash(echo:*), and the substitution made
+    it grantable. That is an outright `allow` for a delete.
+
+    A newline separates commands in the shell everywhere except inside quotes,
+    and a backslash-newline joins lines instead of separating them.
+    """
+    out, index, quote = [], 0, None
+    while index < len(text):
+        char = text[index]
         if quote == "'":
-            if char == "'":
-                quote = None
+            quote = None if char == "'" else quote
+            out.append(char)
+            index += 1
         elif quote == '"':
-            if char == "\\":
+            if char == "\\" and index + 1 < len(text):
+                out.append(text[index:index + 2])
                 index += 2
                 continue
-            if char == '"':
-                quote = None
-            elif command.startswith("$(", index):
-                found.append("$(...)")
-            elif char == "`":
-                found.append("`...`")
+            quote = None if char == '"' else quote
+            out.append(char)
+            index += 1
+        elif char in ("'", '"'):
+            quote = char
+            out.append(char)
+            index += 1
+        elif char == "\\" and index + 1 < len(text):
+            if text[index + 1] == "\n":
+                index += 2  # line continuation joins, it does not separate
+                continue
+            out.append(text[index:index + 2])
+            index += 2
         else:
-            if char in "'\"":
-                quote = char
-            elif command.startswith("$(", index):
-                found.append("$(...)")
-            elif command.startswith("<(", index) or command.startswith(">(", index):
-                found.append("<(...) process substitution")
-            elif char == "`":
-                found.append("`...`")
-        index += 1
-    return list(dict.fromkeys(found))
+            out.append(";" if char == "\n" else char)
+            index += 1
+    return "".join(out)
 
 
 def tokenize(command):
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer = shlex.shlex(newlines_to_separators(command), posix=True,
+                        punctuation_chars=True)
     lexer.whitespace_split = True
     # shlex treats '#' as starting a comment ANYWHERE, discarding the rest of
     # the input. The shell only does that at a word boundary, so `${v##pat}`
@@ -294,6 +389,13 @@ def segment_reasons(segment):
                  (t.startswith("-f") and len(t) > 2) for t in rest):
             reasons.append("awk -f runs a program file the guard cannot inspect")
 
+    flag_args = rest[1:] if (name == "git" and rest[:1] == ["branch"]) else rest
+    if name in FLAG_SENSITIVE or (name == "git" and rest[:1] == ["branch"]):
+        if any(a.startswith("$") or a.startswith(SUBST_PLACEHOLDER)
+               for a in flag_args):
+            reasons.append(f"{name} takes an argument from an expansion the "
+                           f"guard cannot see, which could be a write flag")
+
     if name == "git":
         if rest[:1] == ["branch"]:
             hit = sorted(GIT_BRANCH_DESTRUCTIVE.intersection(rest[1:]))
@@ -309,7 +411,7 @@ def segment_reasons(segment):
 def _flat_reasons(text):
     """Write reasons for text with no unexpanded $(...) left in it."""
     try:
-        tokens = tokenize(text)
+        tokens, _ = expand(tokenize(text))
     except ValueError:
         # Unbalanced quotes and friends. Don't guess -- fall through to the
         # normal prompt rather than allowing or blocking on a bad parse.
@@ -319,6 +421,125 @@ def _flat_reasons(text):
     for segment in split_segments(tokens):
         reasons.extend(segment_reasons(segment))
     return reasons
+
+
+def _parse_loop(tokens, index):
+    """(name, words, body, index_after_done) for the `for` at `index`, or None.
+
+    None means "not a shape worth rewriting" -- nested, unterminated, or
+    malformed. The caller then leaves the tokens exactly as they were.
+    """
+    total = len(tokens)
+    i = index + 1
+    if i >= total or not tokens[i].isidentifier():
+        return None
+    name = tokens[i]
+    i += 1
+    if i >= total or tokens[i] != "in":
+        return None
+    i += 1
+    words = []
+    while i < total and tokens[i] not in ("do", ";"):
+        words.append(tokens[i])
+        i += 1
+    while i < total and tokens[i] != "do":
+        i += 1
+    if i >= total:
+        return None
+    i += 1
+    body = []
+    while i < total and tokens[i] != "done":
+        if tokens[i] == "for":
+            return None  # nested; judge it as written rather than guess
+        body.append(tokens[i])
+        i += 1
+    if i >= total:
+        return None
+    return name, words, body, i + 1
+
+
+def _expandable_word(word):
+    """A loop word we can substitute verbatim: literal, and not a $(...)."""
+    return SUBST_PLACEHOLDER not in word and bool(SAFE_VALUE.match(word))
+
+
+def expand_loops(tokens):
+    """(tokens, expanded_any). Rewrite `for N in a b; do BODY; done` as
+    BODY(a) ; BODY(b) ; so every downstream check sees the real command.
+
+    This is what lets one rule cover several symptoms. `for f in -i; do sed $f
+    x; done` becomes `sed -i x` and is caught by the ordinary sed check, with
+    no special case for loop flags. `for f in a.txt b.txt; do sed -n 1,5p $f;
+    done` becomes literal and is correctly seen as read-only, rather than being
+    refused for merely containing a variable.
+
+    A loop whose word list is not all literal -- `for f in $(cat list)` -- is
+    left untouched, so the `$f` in its body survives to be judged as the opaque
+    argument it is.
+    """
+    out, index, total, changed = [], 0, len(tokens), False
+    expect_command = True
+
+    while index < total:
+        token = tokens[index]
+        if token == "for" and expect_command:
+            parsed = _parse_loop(tokens, index)
+            if parsed:
+                name, words, body, after = parsed
+                if words and all(_expandable_word(w) for w in words):
+                    for word in words:
+                        if out and out[-1] != ";":
+                            out.append(";")
+                        out.extend(_substitute_var(tok, name, word)
+                                   for tok in body)
+                    out.append(";")
+                    index, expect_command, changed = after, True, True
+                    continue
+        expect_command = token in OPERATORS or token in CONTROL_KEYWORDS
+        out.append(token)
+        index += 1
+    return out, changed
+
+
+def expand_assignments(tokens):
+    """Substitute NAME=value assignments whose value is a safe literal.
+
+    Runs before both the write check and the permission check, so `L=/tmp/x;
+    sed -n 1,5p "$L"` is judged on the real path rather than on the token `$L`.
+    Unsafe assignments are left alone here and refused by executable_commands.
+    """
+    out, assignments, changed = [], {}, False
+    expect_command = True
+    for token in tokens:
+        if expect_command:
+            assigned = ASSIGNMENT.match(token)
+            if assigned and safe_assignment(assigned.group(1),
+                                            assigned.group(2)):
+                assignments[assigned.group(1)] = assigned.group(2)
+                out.append(token)
+                continue  # still a command position: `A=1 B=2 cmd`
+        replaced = expand_known(token, assignments)
+        changed = changed or replaced != token
+        out.append(replaced)
+        expect_command = token in OPERATORS or token in CONTROL_KEYWORDS
+    return out, changed
+
+
+def expand(tokens):
+    """(tokens, changed) with assignments and literal loops substituted in.
+
+    One pass, one place. Both the write check and the permission check consume
+    the result, so neither can judge a command the other has already resolved.
+    """
+    tokens, substituted = expand_assignments(tokens)
+    tokens, unrolled = expand_loops(tokens)
+    return tokens, (substituted or unrolled)
+
+
+def _substitute_var(token, name, value):
+    """Replace $name / ${name} in one token. Other variables are left alone."""
+    pattern = r"\$\{" + name + r"\}|\$" + name + r"(?![A-Za-z0-9_])"
+    return re.sub(pattern, lambda _match: value, token)
 
 
 def find_reasons(command, depth=0):
@@ -350,7 +571,8 @@ def find_reasons(command, depth=0):
             "contains a construct the guard cannot inspect for writes "
             "(backticks, process substitution, or unbalanced quotes)"]))
 
-    reasons = _flat_reasons(strip_substitutions(command, spans))
+    stripped = strip_substitutions(command, spans)
+    reasons = _flat_reasons(stripped)
     for start, end in spans:
         reasons.extend(find_reasons(command[start + 2:end - 1], depth + 1))
     return list(dict.fromkeys(reasons))
@@ -366,6 +588,7 @@ def executable_commands(tokens):
     commands, current = [], []
     expect_command = True
     saw_control = False
+    assignments, saw_assignment = {}, False
     index, total = 0, len(tokens)
 
     while index < total:
@@ -389,11 +612,12 @@ def executable_commands(tokens):
             if index >= total or tokens[index] != "in":
                 return None, False
             index += 1
-            # The word list is data, but must be literal: a variable or glob
-            # makes the iteration set unknown.
+            # The word list is data, but every word must be a bare literal:
+            # a variable or glob makes the iteration set unknown, and a word
+            # that is (or splits into) a flag reaches the body unchecked.
             while index < total and tokens[index] not in ("do", ";"):
                 word = tokens[index]
-                if "$" in word or any(ch in word for ch in GLOB_CHARS):
+                if not safe_loop_word(word):
                     return None, False
                 index += 1
             if current:
@@ -420,6 +644,15 @@ def executable_commands(tokens):
             continue
 
         if expect_command:
+            assigned = ASSIGNMENT.match(token)
+            if assigned:
+                name, value = assigned.group(1), assigned.group(2)
+                if not safe_assignment(name, value):
+                    return None, False
+                assignments[name] = value
+                saw_assignment = True
+                index += 1
+                continue  # still a command position: `A=1 B=2 cmd args`
             # `$cmd x` puts an unknown command in command position.
             if token.startswith("$") or token.startswith("-"):
                 return None, False
@@ -430,7 +663,7 @@ def executable_commands(tokens):
 
     if current:
         commands.append(current)
-    return commands, saw_control
+    return commands, saw_control or saw_assignment
 
 
 # ---------------------------------------------------------------------------
@@ -681,11 +914,12 @@ def analyze(text, prefix, deny, depth):
     except ValueError:
         return False, False
 
-    commands, saw_control = executable_commands(tokens)
+    expanded, unrolled = expand(tokens)
+    commands, saw_control = executable_commands(expanded)
     if commands is None:
         return False, False
 
-    needs_grant = saw_control or bool(spans)
+    needs_grant = saw_control or unrolled or bool(spans)
     for segment in commands:
         if not segment:
             continue
@@ -713,10 +947,6 @@ def grant_verdict(command, cwd):
     prefix, _, deny = collect_rules(cwd)
     permitted, needs_grant = analyze(command, prefix, deny, 0)
     return permitted and needs_grant
-
-
-# Kept for callers that predate grant_verdict.
-safe_compound = grant_verdict
 
 
 # ---------------------------------------------------------------------------
@@ -777,8 +1007,10 @@ def guard_disabled():
 # A fixed rule set, so these expectations don't shift when settings.json gains
 # or loses a rule. The point is to pin the guard's own logic, not the config.
 _TEST_RULES = [(pattern, "test") for pattern in (
-    "ls", "cat", "echo", "printf", "grep", "sed", "find", "sort", "awk",
+    "ls", "cd", "cat", "echo", "printf", "grep", "sed", "find", "sort", "awk",
     "head", "tail", "cut", "wc", "git log", "git branch", "git merge-base",
+    "git grep", "git status", "git show", "git diff", "git rev-parse",
+    "git rev-list",
 )]
 
 
@@ -869,9 +1101,73 @@ _CASES = [
     # commenters="" is ever dropped this becomes "allow", not merely "silent".
     ("ask",    "for c in a; do echo hi#; rm -rf /tmp/poc; done"),
     ("silent", 'for f in *; do echo "$f"; done'),        # unknown iteration set
+    # A loop word that is a flag reaches the body as `sed $f`, where every flag
+    # check runs against the token rather than the value. Each of these was
+    # granted as read-only and then wrote to a file. The word is substituted in
+    # now, so the write is positively identified and named: "ask", not silence.
+    ("ask",    "for f in -i; do sed $f 's/a/b/' data.txt; done"),
+    ("ask",    "for f in -o; do sort $f out.txt in.txt; done"),
+    ("ask",    "for f in -D; do git branch $f release-1; done"),
+    ("ask",    "for f in -f; do awk $f prog.awk data.txt; done"),
+    ("ask",    "for f in -delete; do find . -name x $f; done"),
+    # an argument that BEGINS with an expansion could be anything, including a
+    # write flag -- no loop required. This was live and uncaught.
+    ("ask",    'sed $(echo "-i") s/a/b/ data.txt'),
+    ("ask",    'sed "$(echo -i)" s/a/b/ data.txt'),
+    ("ask",    "sort $(echo -o) out.txt in.txt"),
+    ("ask",    "awk $(echo -f) prog.awk data.txt"),
+    ("ask",    "git branch $(echo -D) release-1"),
+    ("ask",    "for f in $(cat list); do sed $f x; done"),   # was gap 2
+    ("ask",    'sed -n "$SCRIPT" data.txt'),                 # accepted loss
+    # ...but an expansion with a literal in front of it cannot start a flag
+    ("allow",  'sed -n "1,$(echo 5)p" f'),
+    ("allow",  "for f in a.txt b.txt; do sed -n 1,5p $f; done"),
+    ("allow",  'L=/tmp/x.log; sed -n 1,5p "$L"'),
+    ("silent", 'grep -c "$s" f'),                  # grep has no write flag
+    ("silent", 'git log -1 --format=%s "$sha"'),   # nor does git log
+    # ...and expansion is exact, so a read-only flag is no longer refused
+    ("allow",  "for f in -n; do sed $f 1,5p data.txt; done"),
+    ("allow",  "for f in -c; do grep $f pattern data.txt; done"),
+    ("allow",  "for f in -i; do grep $f pattern data.txt; done"),
+    # a loop that cannot be expanded, but whose word could be a flag, says so
+    ("ask",    "for f in -i; do for g in a; do sed $f x; done; done"),
+    # not expandable (the word would split), so `$f` survives into the body
+    # and is caught there as an argument the guard cannot see through
+    ("ask",    'for f in "a -i"; do sed $f x; done'),
+    # ...while ordinary literal word lists keep working
+    ("allow",  'for u in https://a.example/ https://b.example/; do echo "$u"; done'),
+    ("allow",  "for c in 0fe44dfb28e2:495458 aedc918bcd:1234; do echo $c; done"),
+    ("allow",  'for s in WRONG_COUNTS BAD_NODE; do git grep -c "$s" HEAD; done'),
     ("silent", "while true; do echo x; done"),
     ("silent", "case $x in a) echo 1;; esac"),
-    ("silent", "F=/tmp; ls $F"),                         # assignment (phase 2)
+
+    # -- variable assignments ----------------------------------------------
+    # Accepted only when the name cannot steer execution AND the value is a
+    # bare literal -- no whitespace to word-split on, no glob character, no
+    # leading dash. That is what makes an unquoted "$L" equal to the literal.
+    ("allow",  "F=/tmp; ls $F"),
+    ("allow",  'L=/tmp/x.log; tail -2 "$L"'),
+    ("allow",  'L=/tmp/x.log; tail -2 "$L"; grep -c foo "$L"'),
+    ("allow",  "D=/tmp; ls ${D}/sub"),
+    ("allow",  "F=/tmp/a.log grep -c x /tmp/a.log"),      # prefix-form assign
+    # names that decide WHAT runs, or HOW
+    ("silent", "PATH=/evil ls"),
+    ("silent", "GIT_EXTERNAL_DIFF=rm git diff HEAD"),     # would execute rm
+    ("silent", "LD_PRELOAD=/tmp/x.so cat f"),
+    ("silent", "IFS=. ls"),
+    ("silent", "HOME=/tmp ls"),
+    ("ask",    "BASH_ENV=/tmp/x sh -c date"),          # `sh` asks regardless
+    ("silent", "PYTHONPATH=/tmp cat f"),
+    ("silent", "http_proxy=http://x cat f"),              # matched uppercased
+    # values that are not bare literals
+    ("silent", 'L="a b"; cat $L'),                        # would word-split
+    ("ask",    "L=-i; sed $L f"),                         # would become a flag
+    ("silent", "L=*.c; ls $L"),                           # would glob
+    ("silent", 'L=$(cat /tmp/p); cat "$L"'),              # not a literal
+    ("silent", "L=; cat $L"),                             # empty
+    # the value is substituted in, so the real command is what gets judged
+    ("ask",    'L=/tmp/x; rm "$L"'),
+    ("ask",    'L=/tmp/x; tee "$L"'),
     ("silent", "export PATH=x; ls"),
     ("silent", "eval ls"),
     # these three were "silent" until command wrappers joined ALWAYS_ASK;
@@ -946,6 +1242,22 @@ _CASES = [
     ("silent", "ls -la"),
     ("silent", "grep -n foo f | head -3"),
     ("silent", "cat f | wc -l"),
+
+    # -- newlines separate commands -----------------------------------------
+    # shlex treats a newline as whitespace under whitespace_split, so two
+    # commands on two lines collapsed into one whose argv0 was the FIRST one.
+    # The second became an argument, the segment matched the first command's
+    # rule, and a substitution anywhere made the whole thing grantable.
+    ("ask",    'echo "$(echo hi)"\nrm -rf /tmp/x'),
+    ("ask",    "ls\nrm -rf /tmp/x"),
+    ("ask",    'echo "$(echo hi)"\nsed -i s/a/b/ f'),
+    ("ask",    "grep -n x f\ntee /tmp/out"),
+    ("allow",  'cd /tmp\nF=/tmp/x.log\necho "=== size ==="; wc -l $F'),
+    ("silent", "ls -la\nls -l /tmp"),          # nothing needing a grant
+    # a newline inside quotes is data, and a backslash-newline joins lines
+    ("silent", 'echo "line1\nline2"'),
+    ("silent", "grep -c 'a\nb' f"),
+    ("allow",  'F=/tmp/x.log\nwc -l \\\n  "$F"'),
 ]
 
 # Known gaps, asserted at their CURRENT behavior so they are written down
@@ -953,12 +1265,10 @@ _CASES = [
 # an allowlisted tool through data the guard cannot read. Closing one makes the
 # assertion below fail -- that is the reminder to move it into _CASES.
 _GAPS = [
-    # A loop word becomes a flag: `sed $f x` with f=-i edits in place. The word
-    # list is checked for literalness, not for looking like a flag.
-    ("allow",  "for f in -i; do sed $f x; done"),
-    # A $(...) word list passes the "must be literal" check because the
-    # placeholder substituted in contains no '$'.
-    ("allow",  'for f in $(cat list); do sed $f x; done'),
+    # Empty. Both original entries were closed by expanding literal loop words
+    # and by treating an argument that begins with an expansion as opaque.
+    # Keep the list and its handling: the next gap wants writing down, not
+    # rediscovering.
 ]
 
 
