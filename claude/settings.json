@@ -46,7 +46,11 @@
       "Bash(wc:*)",
       "Bash(sort:*)",
       "Bash([:*)",
-      "Bash(test:*)"
+      "Bash(test:*)",
+      "Bash(stat:*)",
+      "Bash(git config:*)",
+      "Bash(git --version:*)",
+      "Bash(git version:*)"
     ]
   },
   "worktree": {

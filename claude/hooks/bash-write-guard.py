@@ -55,6 +55,34 @@ AWK_WRITE = re.compile(r"system\s*\(|\bprintf?\s*>|>\s*[\"']|\|\s*[\"']")
 
 # `git branch` is read-only except for the flags that delete or rename.
 GIT_BRANCH_DESTRUCTIVE = {"-d", "-D", "--delete", "-m", "-M", "--move"}
+# `git config` reads in its query forms and writes in the rest. Three ways it
+# writes: an explicit write flag, one of the newer write subcommands, or the
+# bare `git config KEY VALUE` two-argument form, which sets with NO flag at all.
+# That last one forces us to count positionals, which means every value-taking
+# flag has to be consumed correctly -- so an unrecognized flag makes the count
+# unprovable and counts as a write.
+GIT_CONFIG_WRITE_FLAGS = {
+    "--add", "--unset", "--unset-all", "--replace-all",
+    "--rename-section", "--remove-section", "--edit", "-e",
+}
+GIT_CONFIG_WRITE_SUBCOMMANDS = {
+    "set", "unset", "add", "edit", "rename-section", "remove-section",
+}
+GIT_CONFIG_READ_SUBCOMMANDS = {"get", "list"}
+GIT_CONFIG_VALUE_FLAGS = {
+    "-f", "--file", "--blob", "-t", "--type", "--default", "--comment",
+}
+GIT_CONFIG_BOOL_FLAGS = {
+    "--global", "--system", "--local", "--worktree", "-z", "--null",
+    "--name-only", "--show-origin", "--show-scope", "--includes",
+    "--no-includes", "--fixed-value", "--all", "--regexp", "--no-type",
+    "--list", "-l", "--get", "--get-all", "--get-regexp", "--get-urlmatch",
+    "--bool", "--int", "--bool-or-int", "--path", "--expiry-date",
+}
+# git subcommands where one flag flips read into write, so an argument that
+# begins with an expansion could be that flag.
+GIT_FLAG_SENSITIVE = {"branch", "config"}
+
 # The diff machinery behind log/show/diff/format-patch can write its output to
 # a file, so an allowlisted `git diff` is not unconditionally read-only.
 GIT_OUTPUT_FLAG = re.compile(r"^--output(=|$)")
@@ -355,6 +383,36 @@ def argv0_of(segment):
     return None, []
 
 
+def git_config_writes(args):
+    """True if `git config <args>` could modify configuration."""
+    positionals, index = [], 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            positionals.extend(args[index + 1:])
+            break
+        if token.startswith("-"):
+            base = token.split("=", 1)[0]
+            if base in GIT_CONFIG_WRITE_FLAGS:
+                return True
+            if base in GIT_CONFIG_VALUE_FLAGS:
+                index += 1 if "=" in token else 2
+                continue
+            if base in GIT_CONFIG_BOOL_FLAGS:
+                index += 1
+                continue
+            return True  # unknown flag: the positional count is unprovable
+        positionals.append(token)
+        index += 1
+
+    if positionals[:1] and positionals[0] in GIT_CONFIG_WRITE_SUBCOMMANDS:
+        return True
+    if positionals[:1] and positionals[0] in GIT_CONFIG_READ_SUBCOMMANDS:
+        return False
+    # `git config KEY VALUE` sets; `git config KEY` reads.
+    return len(positionals) >= 2
+
+
 def segment_reasons(segment):
     """Write-capability reasons for one simple command."""
     segment = strip_leading_keywords(segment)
@@ -391,8 +449,9 @@ def segment_reasons(segment):
                  (t.startswith("-f") and len(t) > 2) for t in rest):
             reasons.append("awk -f runs a program file the guard cannot inspect")
 
-    flag_args = rest[1:] if (name == "git" and rest[:1] == ["branch"]) else rest
-    if name in FLAG_SENSITIVE or (name == "git" and rest[:1] == ["branch"]):
+    git_sub = name == "git" and rest[:1] and rest[0] in GIT_FLAG_SENSITIVE
+    flag_args = rest[1:] if git_sub else rest
+    if name in FLAG_SENSITIVE or git_sub:
         if any(a.startswith("$") or a.startswith(SUBST_PLACEHOLDER)
                for a in flag_args):
             reasons.append(f"{name} takes an argument from an expansion the "
@@ -404,6 +463,8 @@ def segment_reasons(segment):
             if hit:
                 reasons.append(
                     f"git branch {' '.join(hit)} deletes or renames a branch")
+        if rest[:1] == ["config"] and git_config_writes(rest[1:]):
+            reasons.append("git config writes configuration")
         if any(GIT_OUTPUT_FLAG.match(token) for token in rest):
             reasons.append("git --output writes its output to a file")
 
@@ -685,7 +746,10 @@ def executable_commands(tokens):
 
         if token in ("(", ")", "{", "}"):
             return None, False
-        if token in REFUSED_WORDS:
+        # Like the reserved words below, these are special only where a command
+        # name may start. Checking them everywhere refused `stat -f -c %T .`
+        # and `find . -name x` outright, because `.` is the source builtin.
+        if token in REFUSED_WORDS and expect_command:
             return None, False
 
         # bash recognizes a reserved word only where a command name may start;
@@ -1099,7 +1163,7 @@ _TEST_RULES = [(pattern, "test") for pattern in (
     "ls", "cd", "cat", "echo", "printf", "grep", "sed", "find", "sort", "awk",
     "head", "tail", "cut", "wc", "git log", "git branch", "git merge-base",
     "git grep", "git status", "git show", "git diff", "git rev-parse",
-    "git rev-list",
+    "git rev-list", "git config", "stat",
 )]
 
 
@@ -1198,7 +1262,6 @@ _CASES = [
     ("ask",    "for f in -o; do sort $f out.txt in.txt; done"),
     ("ask",    "for f in -D; do git branch $f release-1; done"),
     ("ask",    "for f in -f; do awk $f prog.awk data.txt; done"),
-    ("ask",    "for f in -delete; do find . -name x $f; done"),
     # an argument that BEGINS with an expansion could be anything, including a
     # write flag -- no loop required. This was live and uncaught.
     ("ask",    'sed $(echo "-i") s/a/b/ data.txt'),
@@ -1299,9 +1362,17 @@ _CASES = [
     ("silent", "cat done"),
     ("silent", "grep -n then f"),
     ("silent", "grep -n for f"),
-    # REFUSED_WORDS stays deliberately blunt -- it is not gated on command
-    # position, so the word anywhere means the guard declines to reason at all.
+    # REFUSED_WORDS is gated on command position, like bash's own reserved
+    # words: as a plain argument the word is just an argument.
     ("silent", "grep -n while f"),
+    ("silent", "ls eval"),
+    ("silent", "echo export PATH=x"),
+    ("allow",  'echo "$(grep -c eval f)"'),
+    # `.` is the source builtin only in command position; as an argument it is
+    # the current directory, and checking it everywhere refused these outright.
+    ("allow",  'echo "fs: $(stat -f -c %T .)"'),
+    ("ask",    "find . -name x $(echo -delete)"),
+    ("ask",    "for f in -delete; do find . -name x $f; done"),
 
     # -- command wrappers hide the real argv0 from every write check ---------
     # Safe today only because none are allowlisted; allowlisting `timeout`
@@ -1354,6 +1425,32 @@ _CASES = [
     ("silent", "git diff --stat HEAD~1"),
     ("silent", "git log --oneline -3"),
 
+    # -- git config: reads are fine, and one write form has no flag at all ---
+    ("silent", "git config --get user.email"),
+    ("silent", "git config user.email"),               # one arg reads
+    ("silent", "git config --list"),
+    ("silent", "git config get user.email"),           # newer read subcommand
+    ("silent", "git config --file cfg --get user.email"),
+    ("silent", "stat -f -c %T ."),
+    ("allow",  'echo "$(git config --get user.email)"'),
+    ("allow",  'echo "fs: $(stat -f -c %T .)"'),
+    ("ask",    "git config user.email a@b.c"),         # two args SETS
+    ("ask",    "git config --file cfg user.email a@b.c"),
+    ("ask",    "git config --add user.email a@b.c"),
+    ("ask",    "git config --unset user.email"),
+    ("ask",    "git config --unset-all user.email"),
+    ("ask",    "git config --replace-all core.editor vim"),
+    ("ask",    "git config --remove-section alias"),
+    ("ask",    "git config --rename-section old new"),
+    ("ask",    "git config --edit"),
+    ("ask",    "git config set user.email a@b.c"),     # newer write subcommand
+    ("ask",    "git config unset user.email"),
+    ("ask",    "git config --bogus user.email"),       # arity unknown -> unprovable
+    # an argument beginning with an expansion could be --unset, and unquoted it
+    # would even word-split into `--unset user.email`
+    ("ask",    "git config $(echo --unset) user.email"),
+    ("ask",    'git config --get "$(echo --unset)"'),
+
     # -- plain commands: the rules decide, the hook keeps quiet ------------
     ("silent", "ls -la"),
     ("silent", "grep -n foo f | head -3"),
@@ -1386,6 +1483,38 @@ _GAPS = [
     # Keep the list and its handling: the next gap wants writing down, not
     # rediscovering.
 ]
+
+
+def _raise_for_test():
+    raise RuntimeError("simulated failure in the decision path")
+
+
+def _fail_closed_ok():
+    """Does a crash in the decision path still produce "ask"?
+
+    This is the property that makes a broad `Bash(sed:*)` acceptable at all:
+    the rules cannot tell `sed -n` from `sed -i`, so they permit both, and only
+    this hook separates them. A hook that crashes silently hands the decision
+    back to those rules -- which is why it must never crash silently.
+    """
+    import contextlib
+    import io
+
+    saved_decide, saved_argv = _decide, sys.argv
+    try:
+        globals()["_decide"] = _raise_for_test
+        sys.argv = ["bash-write-guard.py"]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main()
+        emitted = json.loads(buf.getvalue() or "{}")
+        decision = emitted.get("hookSpecificOutput", {}).get("permissionDecision")
+        return decision == "ask", decision
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        globals()["_decide"] = saved_decide
+        sys.argv = saved_argv
 
 
 def _selftest():
@@ -1431,6 +1560,8 @@ def _selftest():
                 f"WRAPPERS[{name!r}] must not be unwrapped: it writes, takes a "
                 f"shell string, or changes identity. See the WRAPPERS comment.")
 
+    fail_closed, fail_closed_got = _fail_closed_ok()
+
     failed = []
     for group, cases in (("case", _CASES), ("gap", _GAPS)):
         for expected, command in cases:
@@ -1450,13 +1581,18 @@ def _selftest():
           f"{len(failed)} unexpected")
     for problem in wrapper_errors:
         print(f"WRAPPERS  {problem}")
+    if not fail_closed:
+        print(f"FAIL-OPEN  a crash in the decision path emitted "
+              f"{fail_closed_got!r}, not 'ask'. The allow rules would then "
+              f"decide alone, and they permit `sed -i` under Bash(sed:*).")
 
     if local_error:
         print(f"local_grants.py FAILS TO RUN -- every local grant is silently "
               f"lost: {local_error}")
     elif had_local:
         print("note: local_grants.py loads and runs; disabled for the cases above")
-    return 1 if failed or local_error or wrapper_errors else 0
+    return 1 if failed or local_error or wrapper_errors \
+        or not fail_closed else 0
 
 
 def emit(decision, reason):
@@ -1473,6 +1609,22 @@ def main():
     if "--test" in sys.argv[1:]:
         return _selftest()
 
+    try:
+        return _decide()
+    except Exception as exc:
+        # Fail CLOSED. Without this, a crash prints a traceback, emits no
+        # decision, and leaves the allow rules to decide alone -- and those are
+        # broad on purpose, because a prefix rule cannot tell `sed -n` from
+        # `sed -i`. The whole reason `Bash(sed:*)` is acceptable is that this
+        # hook vouches for it, so a hook that cannot run must not be silent.
+        # Only the exception type is reported: the message could quote the
+        # command, and this text is shown in the prompt.
+        emit("ask", f"write-guard could not check this command and is not "
+                    f"vouching for it ({type(exc).__name__})")
+        return 0
+
+
+def _decide():
     if guard_disabled():
         return 0
 
