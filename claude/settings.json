@@ -49,6 +49,7 @@
       "Bash(test:*)",
       "Bash(stat:*)",
       "Bash(du:*)",
+      "Bash(df:*)",
       "Bash(git config:*)",
       "Bash(git --version:*)",
       "Bash(git version:*)"
