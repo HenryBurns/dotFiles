@@ -19,7 +19,7 @@ input falls through to the normal permission flow. It never guesses toward
 Nothing here is specific to a machine, employer, or toolchain. Grants that are
 belong in a sibling `local_grants.py` -- see load_local_grants().
 
-Self-test:  python3 bash-write-guard.py --test
+Self-test:  ./bash-write-guard.py --test   (no `python3`: that always asks)
 """
 
 import json
@@ -1228,7 +1228,7 @@ def guard_disabled():
 
 
 # ---------------------------------------------------------------------------
-# Self-test:  python3 bash-write-guard.py --test
+# Self-test:  ./bash-write-guard.py --test   (no `python3`: that always asks)
 # ---------------------------------------------------------------------------
 
 # A fixed rule set, so these expectations don't shift when settings.json gains
@@ -1455,6 +1455,12 @@ _CASES = [
     ("ask",    "patch -p1 < d.patch"),
     ("ask",    "python3 -c 'print(1)'"),
     ("ask",    "bash -c 'echo hi'"),
+    # An interpreter always asks, with no exception carved out for our own
+    # tools -- so the diagnostic tools are run directly instead. They keep a
+    # shebang and the executable bit for exactly this reason, and a rule then
+    # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
+    ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
+    ("silent", "~/.claude/tools/why-prompt.py ls"),
     ("ask",    "/bin/rm -f x"),                   # matched on the basename
     ("ask",    'echo "$(rm -f x)"'),              # inside a substitution
     ("silent", "zstdgrep foo f.zst"),             # not `zstd`; still read-only

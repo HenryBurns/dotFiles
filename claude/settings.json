@@ -51,6 +51,8 @@
       "Bash(du:*)",
       "Bash(df:*)",
       "Bash(git config:*)",
+      "Bash(~/.claude/tools/why-prompt.py:*)",
+      "Bash(~/.claude/hooks/bash-write-guard.py:*)",
       "Bash(git --version:*)",
       "Bash(git version:*)"
     ]

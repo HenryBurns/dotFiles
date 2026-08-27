@@ -8,7 +8,7 @@ machine- and workplace-specific half stays local and is listed under
 python3 claude/install.py            # repo  -> ~/.claude   (merges, backs up)
 python3 claude/sync.py               # ~/.claude -> repo    (strips local bits)
 python3 claude/sync.py --check       # report drift, write nothing
-python3 ~/.claude/hooks/bash-write-guard.py --test
+~/.claude/hooks/bash-write-guard.py --test
 ```
 
 `settings.json` is read **at startup only** — restart Claude Code after
@@ -35,7 +35,7 @@ tilde is irrelevant, only where it resolves matters.
 When something prompts unexpectedly, ask rather than guess:
 
 ```sh
-python3 ~/.claude/tools/why-prompt.py 'cd /some/dir && grep -n foo bar | head'
+~/.claude/tools/why-prompt.py 'cd /some/dir && grep -n foo bar | head'
 ```
 
 It reports the per-segment rule match, out-of-workspace paths, command

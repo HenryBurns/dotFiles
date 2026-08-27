@@ -12,8 +12,8 @@ guard checks — that lives in the code, where it cannot drift:
 |---|---|
 | What does it check, and why this flag? | `~/.claude/hooks/bash-write-guard.py` — the tables carry their own rationale |
 | What are the two jobs? | its module docstring |
-| Why did *this* command prompt? | `python3 ~/.claude/tools/why-prompt.py '<the exact command>'` |
-| How does a prompt get decided at all? | `~/.claude/README.md` (or `claude/README.md` in the dotfiles repo) |
+| Why did *this* command prompt? | `~/.claude/tools/why-prompt.py '<the exact command>'` |
+| How does a prompt get decided at all? | `claude/README.md` in the dotfiles repo (not installed into `~/.claude`) |
 | Site-specific grants | `~/.claude/hooks/local_grants.py`, untracked — never put a local path or an internal name in the guard itself |
 
 ## Threat model
@@ -91,7 +91,7 @@ around it.
 
 ## Definition of done
 
-1. `python3 ~/.claude/hooks/bash-write-guard.py --test` — all cases, 0 unexpected.
+1. `~/.claude/hooks/bash-write-guard.py --test` — all cases, 0 unexpected.
 2. **Every fix earns a case.** Add the command that was mishandled, not a paraphrase of it.
 3. A gap you cannot close goes in `_GAPS`, asserted at its *current* behaviour, so closing it
    later fails the suite as a reminder. Never leave a known hole undocumented.
