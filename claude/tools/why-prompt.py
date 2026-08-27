@@ -228,10 +228,13 @@ def main():
         elif guard.grant_verdict(command, cwd):
             print("write-guard: ALLOWS (control flow, $(...) substitution, "
                   "and/or a local grant; every command cleared)")
-            # An active grant overrides the rule-level blockers above: the hook
-            # runs before the permission check and its allow is authoritative.
-            # Out-of-workspace paths are NOT cleared -- that gate is separate.
-            blockers = [b for b in blockers if b.startswith("path outside")]
+            # An active grant clears every blocker above, the path gate
+            # included. The hook runs before the permission check and its allow
+            # is authoritative -- verified by experiment, after this tool spent
+            # a while reporting "prompts" for commands that did not. That
+            # override is the whole point: it lets a verified read-only compound
+            # read a path outside the workspace.
+            blockers = []
         else:
             print("write-guard: silent")
 

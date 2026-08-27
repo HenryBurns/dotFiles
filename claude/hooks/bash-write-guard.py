@@ -33,6 +33,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 ALLOWLIST_FILE = os.path.join(_HERE, "unguarded-worktrees")
 
 OPERATORS = {"&&", "||", "|", ";", "&", "|&", "(", ")"}
+
+# `{ list; }` groups commands in the CURRENT shell. Only a bare `{` where a
+# command may start is the group opener: brace expansion arrives as a single
+# token (`{a,b}`), so the two can never be confused. Kept apart from OPERATORS
+# because shlex does not treat these as punctuation, so they reach us as words.
+GROUPING = {"{", "}"}
 REDIRECTS = {">", ">>", ">|", ">&", "&>", "&>>"}
 
 # Redirect targets that don't actually write a file. `2>/dev/null` discards
@@ -372,17 +378,24 @@ def split_segments(tokens):
 
 
 def strip_leading_keywords(segment):
-    """Drop `do` / `then` / `else` etc. from the front of a segment.
+    """Drop `do` / `then` / `else` / `{` etc. from the front of a segment.
 
     Splitting on operators alone leaves the keyword sitting where the command
     name should be, so `for f in a; do rm "$f"; done` yields `['do','rm','$f']`
     and argv0_of reports `do` -- hiding the `rm` from every write check.
 
-    Only LEADING keywords go: one used as an argument must still be scanned, or
+    A bare brace does exactly the same damage: `{ rm -rf x; }` yields
+    `['{','rm','-rf','x']`, so argv0_of reported `{` and NO write check fired.
+    That was survivable only because `{` matches no allow rule and the command
+    prompted anyway -- the guard's own answer was wrong, and would have become
+    a hole the moment it learned to grant brace groups.
+
+    Only LEADING words go: one used as an argument must still be scanned, or
     `find . -name done -delete` would lose its `-delete`.
     """
     index = 0
-    while index < len(segment) and segment[index] in CONTROL_KEYWORDS:
+    while index < len(segment) and (segment[index] in CONTROL_KEYWORDS
+                                    or segment[index] in GROUPING):
         index += 1
     return segment[index:]
 
@@ -589,7 +602,8 @@ def expand_loops(tokens):
                     out.append(";")
                     index, expect_command, changed = after, True, True
                     continue
-        expect_command = token in OPERATORS or token in CONTROL_KEYWORDS
+        expect_command = (token in OPERATORS or token in CONTROL_KEYWORDS
+                          or token in GROUPING)
         out.append(token)
         index += 1
     return out, changed
@@ -615,7 +629,8 @@ def expand_assignments(tokens):
         replaced = expand_known(token, assignments)
         changed = changed or replaced != token
         out.append(replaced)
-        expect_command = token in OPERATORS or token in CONTROL_KEYWORDS
+        expect_command = (token in OPERATORS or token in CONTROL_KEYWORDS
+                          or token in GROUPING)
     return out, changed
 
 
@@ -699,7 +714,8 @@ def unwrap_wrappers(tokens):
             if start is not None:
                 index, changed = start, True
                 continue
-        expect_command = token in OPERATORS or token in CONTROL_KEYWORDS
+        expect_command = (token in OPERATORS or token in CONTROL_KEYWORDS
+                          or token in GROUPING)
         out.append(token)
         index += 1
     return out, changed
@@ -775,8 +791,24 @@ def executable_commands(tokens):
     while index < total:
         token = tokens[index]
 
-        if token in ("(", ")", "{", "}"):
+        # A subshell is a separate evaluation and `f() { ...; }` is a definition
+        # whose body does not run here; this pass models neither, so both abort.
+        if token in ("(", ")"):
             return None, False
+
+        # `{ list; }` adds no capability of its own -- it runs the list in the
+        # current shell -- so the commands inside are simply the commands that
+        # can run. A brace anywhere a command CANNOT start means we misread the
+        # line (bash requires the `;` in `{ echo a; }`), so that still aborts.
+        if token in GROUPING:
+            if not expect_command:
+                return None, False
+            if current:
+                commands.append(current)
+                current = []
+            saw_control = True
+            index += 1
+            continue
         # Like the reserved words below, these are special only where a command
         # name may start. Checking them everywhere refused `stat -f -c %T .`
         # and `find . -name x` outright, because `.` is the source builtin.
@@ -1434,6 +1466,23 @@ _CASES = [
     ("ask",    "if [ -f x ]; then rm x; fi"),
     ("ask",    "if [ -f x ]; then echo y; else rm x; fi"),
     ("ask",    'for f in a; do find . -name "$f" -delete; done'),
+    # A bare `{` is the same trap as `do`: it sits where argv0 belongs, so a
+    # brace group hid every write inside it from the checks below. Only the
+    # rule gate was prompting these -- the guard's own answer said nothing.
+    ("ask",    "{ rm -rf /tmp/x; }"),
+    ("ask",    "{ sed -i s/a/b/ f; }"),
+    ("ask",    "true || { sed -i s/a/b/ f; }"),
+    ("ask",    "{ timeout 5 rm -rf /tmp/x; }"),   # unwrapped inside the group
+    ("ask",    "{ echo a; } > /tmp/f"),           # redirect on the group itself
+    # Grouping adds no capability, so a read-only group is grantable.
+    ("allow",  "grep -c x f || { echo no; tail -2 f; }"),
+    ("allow",  "F=/tmp/out\ngrep -q x \"$F\" 2>/dev/null || { echo no; tail -2 \"$F\"; }"),
+    # Only a BARE brace in command position is a group: brace expansion is one
+    # token, a brace where no command can start means we misread the line, and
+    # a function definition aborts on its parentheses.
+    ("silent", "echo {a,b}"),
+    ("silent", "echo a }"),
+    ("silent", "f() { rm -rf x; }"),
     # ...but only LEADING keywords are stripped: as an argument it still scans.
     ("ask",    "find . -name done -delete"),
     ("silent", "cat done"),
