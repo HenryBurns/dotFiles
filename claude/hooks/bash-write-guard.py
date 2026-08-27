@@ -53,8 +53,26 @@ SORT_OUTPUT = re.compile(r"^-o.*|^--output(=|$)")
 AWK_LIKE = {"awk", "gawk", "mawk", "nawk"}
 AWK_WRITE = re.compile(r"system\s*\(|\bprintf?\s*>|>\s*[\"']|\|\s*[\"']")
 
-# `git branch` is read-only except for the flags that delete or rename.
-GIT_BRANCH_DESTRUCTIVE = {"-d", "-D", "--delete", "-m", "-M", "--move"}
+# `git branch` is read-only except for the flags that delete, rename or move.
+# -f/--force is the subtle one: `git branch -f name start` RESETS an existing
+# branch to start, discarding where it pointed. It was missing here, so it was
+# allowlisted by Bash(git branch:*) and produced no reason -- an unprompted
+# write to a ref.
+GIT_BRANCH_DESTRUCTIVE = {"-d", "-D", "--delete", "-m", "-M", "--move",
+                          "-f", "--force", "-c", "-C", "--copy"}
+
+# git subcommands that always write. None are allowlisted, so they already
+# prompt; naming them makes the prompt say why, and stops a compound being
+# granted because every OTHER command in it is read-only. Deliberately excludes
+# subcommands with read-only forms (worktree list, remote show, stash list,
+# reflog show, tag -l) rather than report something false about them.
+GIT_WRITE_SUBCOMMANDS = {
+    "checkout", "switch", "restore", "reset", "clean", "apply", "am",
+    "rm", "mv", "commit", "merge", "rebase", "cherry-pick", "revert",
+    "pull", "push", "fetch", "clone", "init", "gc", "prune", "repack",
+    "update-ref", "update-index", "write-tree", "commit-tree", "mktree",
+    "filter-branch", "replace", "checkout-index", "sparse-checkout",
+}
 # `git config` reads in its query forms and writes in the rest. Three ways it
 # writes: an explicit write flag, one of the newer write subcommands, or the
 # bare `git config KEY VALUE` two-argument form, which sets with NO flag at all.
@@ -472,8 +490,10 @@ def segment_reasons(segment):
         if rest[:1] == ["branch"]:
             hit = sorted(GIT_BRANCH_DESTRUCTIVE.intersection(rest[1:]))
             if hit:
-                reasons.append(
-                    f"git branch {' '.join(hit)} deletes or renames a branch")
+                reasons.append(f"git branch {' '.join(hit)} deletes, renames "
+                               f"or moves a branch")
+        if rest[:1] and rest[0] in GIT_WRITE_SUBCOMMANDS:
+            reasons.append(f"git {rest[0]} writes")
         if rest[:1] == ["config"] and git_config_writes(rest[1:]):
             reasons.append("git config writes configuration")
         if any(GIT_OUTPUT_FLAG.match(token) for token in rest):
@@ -1231,6 +1251,24 @@ _CASES = [
     ("ask",    "awk -fprog.awk f"),
     ("ask",    "git branch -D feature/x"),
     ("ask",    "git branch -m a b"),
+    # -f RESETS an existing branch to a new start point, discarding where it
+    # pointed. Allowlisted by Bash(git branch:*) and previously unflagged.
+    ("ask",    "git branch -f backup/pre-fix HEAD"),
+    ("ask",    "git branch --force backup/pre-fix HEAD"),
+    ("ask",    "git branch -c old new"),
+    ("silent", "git branch --list"),
+    ("silent", "git branch -a"),
+    ("allow",  'echo "on: $(git branch --show-current)"'),
+    # git subcommands that always write: not allowlisted, but say why
+    ("ask",    "git checkout -q b31304ed6e19"),
+    ("ask",    "git reset --hard HEAD~1"),
+    ("ask",    "git clean -fd"),
+    ("ask",    "git commit -m x"),
+    ("ask",    "git push origin master"),
+    ("ask",    'cd /workspace\ngit checkout -q abc123 && echo "at $(git rev-parse --short HEAD)"'),
+    # ...and the read-only forms of mixed subcommands are left alone
+    ("silent", "git worktree list"),
+    ("silent", "git stash list"),
     ("ask",    "tee /tmp/f"),
     ("ask",    "dd if=a of=b"),
     ("ask",    "truncate -s 0 f"),
