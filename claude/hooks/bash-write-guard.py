@@ -113,6 +113,8 @@ ALWAYS_ASK = {
     # `timeout 30 rm -rf x` produced no reasons at all. Unwrapping instead
     # would mean knowing each wrapper's own flag arity, and guessing that wrong
     # is how you mistake the real command for a flag value. Refuse to guess.
+    # timeout is unwrapped by unwrap_wrappers when its prefix parses; this
+    # entry catches the leftovers -- an unknown flag or a bad duration.
     "timeout": "runs another command the guard cannot attribute",
     "nice": "runs another command the guard cannot attribute",
     "ionice": "runs another command the guard cannot attribute",
@@ -525,6 +527,92 @@ def expand_assignments(tokens):
     return out, changed
 
 
+# Wrappers the guard will see through, as `NAME [OPTION]... [POSITIONAL]...
+# COMMAND [ARG]...`. Adding one is a data entry, but read this first -- an
+# unwrapper that parses wrongly hides the command that actually runs, which is
+# strictly worse than not unwrapping at all.
+#
+#   value        flags taking an argument. Listing one with the wrong arity is
+#                the whole hazard: the command gets eaten as a flag's value.
+#   bool         flags taking no argument.
+#   attached     short value flags may carry the value in the same token
+#                (`stdbuf -o0`). Leave False unless the tool needs it.
+#   positional   one regex per fixed argument BEFORE the command. This is the
+#                safety net, not a convenience: if the token where a positional
+#                belongs does not match its shape, the flag parse was wrong and
+#                the command is not where we think it is, so we refuse.
+#
+# A wrapper does NOT belong here if:
+#   * it writes something of its own -- `nohup` redirects stdout into
+#     nohup.out, `script` records a transcript;
+#   * its command is one shell string (`watch`, `flock -c`, `sh -c`) or its
+#     arguments arrive from elsewhere (`xargs`) -- there is no argv to inspect;
+#   * it changes who or what the command runs as (`sudo`, `su`, `env`).
+# Those stay in ALWAYS_ASK, which is also where anything failing to parse lands.
+WRAPPERS = {
+    "timeout": {
+        "bool": {"--preserve-status", "--foreground", "-v", "--verbose"},
+        "value": {"-k", "--kill-after", "-s", "--signal"},
+        "attached": False,
+        "positional": (re.compile(r"^[0-9]+(\.[0-9]+)?[smhd]?$"),),  # DURATION
+    },
+}
+
+
+def _unwrap(tokens, index, spec):
+    """Index of the wrapped command's first token, or None to leave it alone."""
+    total = len(tokens)
+    i = index + 1
+
+    while i < total and tokens[i].startswith("-") and tokens[i] != "--":
+        base = tokens[i].split("=", 1)[0]
+        if base in spec["bool"] and "=" not in tokens[i]:
+            i += 1
+        elif base in spec["value"]:
+            i += 1 if "=" in tokens[i] else 2
+        elif spec["attached"] and len(base) > 2 and base[:2] in spec["value"]:
+            i += 1
+        else:
+            return None  # unknown flag: arity unknown, so the parse is unsafe
+    if i < total and tokens[i] == "--":
+        i += 1
+
+    for shape in spec["positional"]:
+        if i >= total or not shape.match(tokens[i]):
+            return None
+        i += 1
+
+    if i >= total or tokens[i].startswith("-") or tokens[i].startswith("$"):
+        return None  # nothing recognizable in the command position
+    return i
+
+
+def unwrap_wrappers(tokens):
+    """(tokens, changed) with recognized wrapper prefixes removed.
+
+    A listed wrapper writes nothing itself, so dropping the prefix loses
+    nothing and lets the ordinary checks see the command that really runs:
+    `timeout 40 rm -rf x` is caught as rm, and `timeout 40 grep -c x f` is seen
+    to be read-only rather than refused for the wrapper's sake. A prefix that
+    will not parse is left in place for ALWAYS_ASK to catch. Wrappers nest,
+    since the command position is re-examined after each removal.
+    """
+    out, index, total, changed = [], 0, len(tokens), False
+    expect_command = True
+    while index < total:
+        token = tokens[index]
+        spec = WRAPPERS.get(token.rsplit("/", 1)[-1]) if expect_command else None
+        if spec is not None:
+            start = _unwrap(tokens, index, spec)
+            if start is not None:
+                index, changed = start, True
+                continue
+        expect_command = token in OPERATORS or token in CONTROL_KEYWORDS
+        out.append(token)
+        index += 1
+    return out, changed
+
+
 def expand(tokens):
     """(tokens, changed) with assignments and literal loops substituted in.
 
@@ -533,7 +621,8 @@ def expand(tokens):
     """
     tokens, substituted = expand_assignments(tokens)
     tokens, unrolled = expand_loops(tokens)
-    return tokens, (substituted or unrolled)
+    tokens, unwrapped = unwrap_wrappers(tokens)
+    return tokens, (substituted or unrolled or unwrapped)
 
 
 def _substitute_var(token, name, value):
@@ -1226,8 +1315,35 @@ _CASES = [
     ("ask",    "watch rm -rf /tmp/x"),
     ("ask",    "env rm -rf /tmp/x"),
     ("ask",    "sudo rm -rf /tmp/x"),
-    ("ask",    "timeout 30 curl -s -o /dev/null https://example.invalid"),
-    ("ask",    'for u in a b; do timeout 5 curl -s "$u"; done'),
+    # `timeout [OPTION] DURATION COMMAND` parses, so the wrapper is removed and
+    # the real command is judged. curl is simply not allowlisted -> the rules
+    # decide, which is a prompt, but no longer timeout's doing.
+    ("silent", "timeout 30 curl -s -o /dev/null https://example.invalid"),
+    ("silent", 'for u in a b; do timeout 5 curl -s "$u"; done'),
+    ("ask",    "timeout 40 rm -rf /tmp/x"),               # caught as rm
+    ("ask",    "timeout 40 sed -i s/a/b/ f"),             # caught as sed -i
+    ("ask",    "timeout -k 5 40 rm -rf /tmp/x"),          # flags consumed
+    ("ask",    "timeout --signal=KILL 40 tee /tmp/f"),
+    ("allow",  "timeout 40 grep -c x f"),                 # read-only, granted
+    ("allow",  "timeout 5 wc -l f"),
+    ("allow",  "timeout 1.5s grep -c x f"),
+    ("allow",  "timeout --foreground 40 grep -c x f"),
+    ("allow",  'for f in a b; do timeout 5 grep -c x "$f"; done'),
+    # a prefix that will not parse keeps the wrapper, and ALWAYS_ASK catches it
+    ("ask",    "timeout --bogus 40 grep -c x f"),         # unknown flag arity
+    ("ask",    "timeout notaduration grep -c x f"),       # duration check fails
+    ("ask",    "timeout 40 $CMD -c x f"),                 # unknown command
+    # `--` ends the options, and per `timeout [OPTION] DURATION COMMAND` it
+    # must precede DURATION -- after it, `--` would BE the command name.
+    ("allow",  "timeout -- 5 grep -c x f"),
+    ("ask",    "timeout -- 5 rm -rf /tmp/x"),
+    ("ask",    "timeout 5 -- grep -c x f"),   # invalid for timeout; not unwrapped
+    # wrappers nest: the command position is re-examined after each removal
+    ("allow",  "timeout 5 timeout 3 grep -c x f"),
+    ("ask",    "timeout 5 timeout 3 rm -rf /tmp/x"),
+    # the other wrappers stay opaque on purpose
+    ("ask",    "nice 40 grep -c x f"),
+    ("ask",    "stdbuf -o0 grep -c x f"),
     # the wrapper name as an argument is still just an argument
     ("silent", "grep -n timeout f"),
     ("silent", "git log --oneline --grep=timeout"),
@@ -1288,6 +1404,33 @@ def _selftest():
         except Exception as exc:
             local_error = f"{type(exc).__name__}: {exc}"
 
+    # A malformed WRAPPERS entry is the one bug that would fail silently: the
+    # parser would refuse everything, or worse, mis-locate the command. Check
+    # the shape here rather than discovering it from a missed prompt.
+    wrapper_errors = []
+    for name, spec in WRAPPERS.items():
+        for key, kind in (("bool", (set, frozenset)), ("value", (set, frozenset)),
+                          ("attached", bool), ("positional", tuple)):
+            if key not in spec:
+                wrapper_errors.append(f"WRAPPERS[{name!r}] is missing {key!r}")
+            elif not isinstance(spec[key], kind):
+                wrapper_errors.append(
+                    f"WRAPPERS[{name!r}][{key!r}] should be {kind}, "
+                    f"got {type(spec[key])}")
+        for shape in spec.get("positional", ()):
+            if not hasattr(shape, "match"):
+                wrapper_errors.append(
+                    f"WRAPPERS[{name!r}] positional entries must be compiled "
+                    f"regexes; got {shape!r}")
+        if set(spec) - {"bool", "value", "attached", "positional"}:
+            wrapper_errors.append(
+                f"WRAPPERS[{name!r}] has unrecognized keys: "
+                f"{sorted(set(spec) - {'bool', 'value', 'attached', 'positional'})}")
+        if name in ("nohup", "script", "watch", "xargs", "sudo", "su", "env"):
+            wrapper_errors.append(
+                f"WRAPPERS[{name!r}] must not be unwrapped: it writes, takes a "
+                f"shell string, or changes identity. See the WRAPPERS comment.")
+
     failed = []
     for group, cases in (("case", _CASES), ("gap", _GAPS)):
         for expected, command in cases:
@@ -1305,12 +1448,15 @@ def _selftest():
     total = len(_CASES) + len(_GAPS)
     print(f"\n{total} cases ({len(_CASES)} behaviour, {len(_GAPS)} known gaps), "
           f"{len(failed)} unexpected")
+    for problem in wrapper_errors:
+        print(f"WRAPPERS  {problem}")
+
     if local_error:
         print(f"local_grants.py FAILS TO RUN -- every local grant is silently "
               f"lost: {local_error}")
     elif had_local:
         print("note: local_grants.py loads and runs; disabled for the cases above")
-    return 1 if failed or local_error else 0
+    return 1 if failed or local_error or wrapper_errors else 0
 
 
 def emit(decision, reason):
