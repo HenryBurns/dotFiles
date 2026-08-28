@@ -233,6 +233,13 @@ ALWAYS_ASK = {
 # Keywords that introduce a command position after them.
 CONTROL_KEYWORDS = {"do", "then", "elif", "else", "if", "fi", "done"}
 
+# Builtins that only steer control flow or return a status. They touch nothing,
+# take no path, and have no write form -- but they are builtins, so no `Bash(..)`
+# rule can ever match them and `|| continue` silenced the guard on an otherwise
+# read-only loop. Cleared without a rule for the same reason `for` is handled:
+# there is no command for a rule to name.
+NOOP_BUILTINS = {"continue", "break", "true", "false", ":"}
+
 # Anything here means we refuse to reason about the command at all. Either it
 # rewrites the execution environment (eval, export), or it is a construct
 # outside the recognized subset (while, case), or it hides a command position.
@@ -300,8 +307,18 @@ def safe_assignment(name, value):
     # placeholder and the flag-sensitive check catches `sed $n f` while
     # `printf "$n"` is left alone. The substitution's own commands are verified
     # separately, by analyze recursing into the span.
-    return (bool(value) and not value.startswith("-")
-            and bool(SAFE_VALUE.match(value)))
+    # As with a loop word, the test is "could this arrive as a flag", not "can
+    # I read it". `st=**MISMATCH**` is unreadable but provably not a flag, and
+    # it was silencing the guard on a loop that only ran grep and printf. It is
+    # accepted here and left UNSUBSTITUTED -- readable_assignment below decides
+    # what may stand in for `$st` -- so the body still judges `$st` as opaque.
+    pieces = value.split()
+    return bool(pieces) and not any(p.startswith("-") for p in pieces)
+
+
+def readable_assignment(name, value):
+    """True if NAME=value is safe AND literal enough to substitute verbatim."""
+    return safe_assignment(name, value) and bool(SAFE_VALUE.match(value))
 
 
 def safe_loop_word(word):
@@ -328,10 +345,16 @@ def safe_loop_word(word):
     # that could arrive as a flag, not the whitespace itself -- which makes
     # judging the pieces exact where rejecting all whitespace was merely
     # conservative. `a -i` still refuses, on its second piece.
+    #
+    # The test is "could this arrive as a flag", NOT "can I read it". A glob
+    # like `conf/*.toml` is unreadable -- the matches depend on the directory
+    # -- but no expansion of it can start with `-`, and an unreadable word is
+    # exactly what the placeholder already records elsewhere. Refusing it made
+    # the guard silent on a loop whose body only ran grep and printf. A word
+    # that IS visibly a flag still refuses: that is a positive identification,
+    # and those are never thrown away.
     pieces = word.split()
-    return bool(pieces) and all(
-        not piece.startswith("-") and SAFE_VALUE.match(piece)
-        for piece in pieces)
+    return bool(pieces) and not any(p.startswith("-") for p in pieces)
 
 
 def expand_known(token, assignments):
@@ -462,6 +485,40 @@ def argv0_of(segment):
     return None, []
 
 
+# git's own options sit BEFORE the subcommand, so `git -C dir reset --hard`
+# puts `-C` where every check below looked for the subcommand name. reset,
+# branch -D and the rest were producing no write reason at all; only the fact
+# that `git -C ...` matches no allow rule was prompting them.
+GIT_GLOBAL_BOOL = {
+    "-p", "--paginate", "-P", "--no-pager", "--bare", "--no-replace-objects",
+    "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs",
+    "--icase-pathspecs", "--no-optional-locks",
+}
+GIT_GLOBAL_VALUE = {
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env",
+}
+
+
+def git_subcommand_index(rest):
+    """Index of the real subcommand in `git <globals> SUB ...`, or None.
+
+    None means either no subcommand or an option this does not know -- and an
+    unknown option makes the position unprovable, so callers must treat that as
+    "cannot attribute" rather than "no subcommand".
+    """
+    index = 0
+    while index < len(rest) and rest[index].startswith("-"):
+        token = rest[index]
+        base = token.split("=", 1)[0]
+        if base in GIT_GLOBAL_BOOL and "=" not in token:
+            index += 1
+        elif base in GIT_GLOBAL_VALUE:
+            index += 1 if "=" in token else 2
+        else:
+            return None
+    return index if index < len(rest) else None
+
+
 def git_fetch_writes(args):
     """Why `git fetch <args>` writes more than tracking refs, or "" if it does not."""
     positional_only, index = False, 0
@@ -555,8 +612,13 @@ def segment_reasons(segment):
                  (t.startswith("-f") and len(t) > 2) for t in rest):
             reasons.append("awk -f runs a program file the guard cannot inspect")
 
-    git_sub = name == "git" and rest[:1] and rest[0] in GIT_FLAG_SENSITIVE
-    flag_args = rest[1:] if git_sub else rest
+    # Everything below wants the subcommand, which global options push right.
+    sub_at = git_subcommand_index(rest) if name == "git" else None
+    sub = rest[sub_at] if sub_at is not None else None
+    sub_args = rest[sub_at + 1:] if sub_at is not None else []
+
+    git_sub = sub in GIT_FLAG_SENSITIVE
+    flag_args = sub_args if git_sub else rest
     if name in FLAG_SENSITIVE or git_sub:
         if any(a.startswith("$") or a.startswith(SUBST_PLACEHOLDER)
                for a in flag_args):
@@ -564,18 +626,23 @@ def segment_reasons(segment):
                            f"guard cannot see, which could be a write flag")
 
     if name == "git":
-        if rest[:1] == ["branch"]:
-            hit = sorted(GIT_BRANCH_DESTRUCTIVE.intersection(rest[1:]))
+        if rest and sub_at is None:
+            # An option we cannot size, so the subcommand cannot be located and
+            # none of the checks below can be trusted to have run.
+            reasons.append("git is passed an option the guard cannot attribute "
+                           "to a subcommand")
+        if sub == "branch":
+            hit = sorted(GIT_BRANCH_DESTRUCTIVE.intersection(sub_args))
             if hit:
                 reasons.append(f"git branch {' '.join(hit)} deletes, renames "
                                f"or moves a branch")
-        if rest[:1] and rest[0] in GIT_WRITE_SUBCOMMANDS:
-            reasons.append(f"git {rest[0]} writes")
-        if rest[:1] == ["fetch"]:
-            why = git_fetch_writes(rest[1:])
+        if sub in GIT_WRITE_SUBCOMMANDS:
+            reasons.append(f"git {sub} writes")
+        if sub == "fetch":
+            why = git_fetch_writes(sub_args)
             if why:
                 reasons.append(why)
-        if rest[:1] == ["config"] and git_config_writes(rest[1:]):
+        if sub == "config" and git_config_writes(sub_args):
             reasons.append("git config writes configuration")
         if any(GIT_OUTPUT_FLAG.match(token) for token in rest):
             reasons.append("git --output writes its output to a file")
@@ -689,8 +756,8 @@ def expand_assignments(tokens):
     for token in tokens:
         if expect_command:
             assigned = ASSIGNMENT.match(token)
-            if assigned and safe_assignment(assigned.group(1),
-                                            assigned.group(2)):
+            if assigned and readable_assignment(assigned.group(1),
+                                                assigned.group(2)):
                 assignments[assigned.group(1)] = assigned.group(2)
                 out.append(token)
                 continue  # still a command position: `A=1 B=2 cmd`
@@ -1118,6 +1185,20 @@ def segment_permitted(segment, prefix, deny):
         return False, False
     if matches(text, prefix)[0]:
         return True, False
+    # `git -C dir rev-parse HEAD` is the same operation as `git rev-parse HEAD`
+    # -- git's global options change where it looks, not what it does -- but a
+    # prefix rule is literal text, so `Bash(git rev-parse:*)` misses it. Match
+    # the subcommand form too. Safe only because segment_reasons above now
+    # locates the subcommand past those options, so a write still asks first;
+    # the directory itself is still checked by the workspace test.
+    if segment[0] == "git" and len(segment) > 1:
+        sub_at = git_subcommand_index(segment[1:])
+        if sub_at:  # zero means no globals, already handled above
+            normalized = " ".join(["git"] + segment[1 + sub_at:])
+            if matches(normalized, deny)[0]:
+                return False, False
+            if matches(normalized, prefix)[0]:
+                return True, False
     if LOCAL_GRANT is not None:
         try:
             if LOCAL_GRANT(segment, GUARD_VIEW):
@@ -1248,6 +1329,8 @@ def analyze(text, prefix, deny, depth, roots=()):
             return False, False
         if segment_reasons(segment):
             return False, False
+        if segment[0] in NOOP_BUILTINS:
+            continue
         permitted, was_local = segment_permitted(segment, prefix, deny)
         if not permitted:
             return False, False
@@ -1339,7 +1422,8 @@ def guard_disabled():
 _TEST_RULES = [(pattern, "test") for pattern in (
     "ls", "cd", "cat", "echo", "printf", "grep", "sed", "find", "sort", "awk",
     "diff",
-    "head", "tail", "cut", "wc", "git log", "git branch", "git merge-base",
+    "head", "tail", "cut", "wc", "[", "test", "git log", "git branch",
+    "git merge-base",
     "git grep", "git status", "git show", "git diff", "git rev-parse",
     "git rev-list", "git config", "stat",
 )]
@@ -1458,7 +1542,12 @@ _CASES = [
     # line -- verifying a command shorter than the one bash actually runs. If
     # commenters="" is ever dropped this becomes "allow", not merely "silent".
     ("ask",    "for c in a; do echo hi#; rm -rf /tmp/poc; done"),
-    ("silent", 'for f in *; do echo "$f"; done'),        # unknown iteration set
+    # An unknown iteration set is opaque, not forbidden: a glob cannot be read,
+    # but the body then judges `$f` as the unknown value it is.
+    ("allow",  'for f in *; do echo "$f"; done'),
+    ("allow",  'for t in conf/*.toml; do cat "$t"; done'),
+    ("ask",    "for f in conf/*; do sed $f x; done"),    # unknown value into sed
+    ("ask",    "for f in -i; do sed $f x; done"),        # visibly a flag: refused
     # A loop word that is a flag reaches the body as `sed $f`, where every flag
     # check runs against the token rather than the value. Each of these was
     # granted as read-only and then wrote to a file. The word is substituted in
@@ -1520,10 +1609,13 @@ _CASES = [
     ("ask",    "BASH_ENV=/tmp/x sh -c date"),          # `sh` asks regardless
     ("silent", "PYTHONPATH=/tmp cat f"),
     ("silent", "http_proxy=http://x cat f"),              # matched uppercased
-    # values that are not bare literals
-    ("silent", 'L="a b"; cat $L'),                        # would word-split
+    # Values that are not bare literals are opaque, not forbidden: accepted,
+    # left unsubstituted, and judged as `$L`. Only a value that is VISIBLY a
+    # flag still refuses -- that is a positive identification.
+    ("allow",  'L="a b"; cat $L'),                        # word-splits: harmless
+    ("allow",  "L=*.c; ls $L"),                           # globs: harmless
     ("ask",    "L=-i; sed $L f"),                         # would become a flag
-    ("silent", "L=*.c; ls $L"),                           # would glob
+    ("ask",    'L="a -i"; sed $L f'),                     # flag in a later piece
     # a value from $(...) is opaque, not forbidden: recorded as the placeholder
     # so a flag-sensitive command refuses it and everything else is fine
     ("allow",  'L=$(cat /tmp/p); cat "$L"'),
@@ -1572,6 +1664,16 @@ _CASES = [
     # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
     ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
     ("silent", "~/.claude/tools/why-prompt.py ls"),
+
+    # git's global options sit BEFORE the subcommand, so `-C dir` was landing
+    # where every git check looked for it. These produced no reason at all.
+    ("ask",    "git -C /tmp/x reset --hard"),
+    ("ask",    "git -C /tmp/x branch -D main"),
+    ("ask",    "git --git-dir=/tmp/x/.git fetch --prune origin"),
+    ("ask",    "git --bogus-opt log"),          # unsizeable option: cannot attribute
+    ("allow",  "git -C /tmp/x rev-parse HEAD"), # same op as `git rev-parse`
+    # `continue` and friends are builtins, so no rule can ever name them.
+    ("allow",  'for f in a b; do [ -e "$f" ] || continue; cat "$f"; done'),
 
     # xargs takes its arguments from stdin but its COMMAND from argv, and it
     # never re-parses stdin as shell syntax -- so the command can be read, with
