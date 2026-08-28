@@ -35,8 +35,12 @@ One carve-out: a write **provably** landing in a session scratchpad
 (`/tmp/claude-<uid>/*/*/scratchpad`, own uid only) is disposable and does not
 prompt. "Provably" is doing the work — absolute and literal only, since a
 relative path depends on a cwd an earlier `cd` may have changed and `$P/f` is
-not a path anyone has read. Deletion and in-place edits are never sandboxed.
-Extending this to a directory that is *not* disposable would break the model.
+not a path anyone has read. It covers the writers that name their targets in
+argv — redirects, `uniq`'s output, `sed -i`, `tee` — all or nothing, since one
+target outside the scratchpad makes the whole command ask. **Deletion is never
+sandboxed**: "it is only a scratch file" stops being true the moment the target
+is wrong, and a wrong `rm -rf` target is what this guard is for. Extending any
+of this to a directory that is *not* disposable would break the model.
 
 ## The verdict contract
 

@@ -487,6 +487,73 @@ def in_sandbox(target):
     return bool(SANDBOX_DIR.match(os.path.normpath(target)))
 
 
+def sandboxed_targets(paths):
+    """True if there is at least one target and every one is in a scratchpad.
+
+    An empty list is False on purpose: "no targets found" means the parse did
+    not locate them, which is not the same as "nothing is written".
+    """
+    return bool(paths) and all(in_sandbox(path) for path in paths)
+
+
+# sed's script is its first positional -- unless -e/-f supplied one, in which
+# case every positional is a file. Getting that wrong would drop a real file
+# from the target list, so an unrecognized flag abandons the parse instead.
+SED_SCRIPT_FLAGS = {"-e", "--expression", "-f", "--file"}
+SED_VALUE_FLAGS = SED_SCRIPT_FLAGS | {"-l", "--line-length"}
+SED_BOOL_FLAGS = {
+    "-n", "--quiet", "--silent", "-r", "-E", "--regexp-extended",
+    "-s", "--separate", "-z", "--null-data", "--posix", "--follow-symlinks",
+    "--debug", "--sandbox", "-u", "--unbuffered",
+}
+
+
+def sed_targets(args):
+    """Files `sed -i` would rewrite, or None if the parse is not provable."""
+    positionals, script_from_flag, index = [], False, 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            positionals.extend(args[index + 1:])
+            break
+        if token.startswith("-") and token != "-":
+            base = token.split("=", 1)[0]
+            if base in SED_SCRIPT_FLAGS:
+                script_from_flag = True
+            if base in SED_VALUE_FLAGS:
+                index += 1 if "=" in token else 2
+            elif base in SED_BOOL_FLAGS or SED_INPLACE.match(token):
+                index += 1
+            else:
+                return None
+            continue
+        positionals.append(token)
+        index += 1
+    if script_from_flag:
+        return positionals
+    return positionals[1:]          # the first positional is the script
+
+
+# tee writes every positional. `-` is stdout, and no tee flag takes a separate
+# value (--output-error carries its mode with `=`), so the parse is simple.
+TEE_BOOL_FLAGS = {"-a", "--append", "-i", "--ignore-interrupts", "-p",
+                  "--output-error"}
+
+
+def tee_targets(args):
+    """Files tee writes, or None if a flag makes the parse unprovable."""
+    files = []
+    for token in args:
+        if token == "-":
+            continue                # stdout, not a file
+        if token.startswith("-"):
+            if token.split("=", 1)[0] not in TEE_BOOL_FLAGS:
+                return None
+            continue
+        files.append(token)
+    return files
+
+
 def redirects_to_file(segment):
     """True only if a redirect names a real destination file."""
     for index, token in enumerate(segment):
@@ -714,11 +781,17 @@ def segment_reasons(segment):
     if name is None:
         return reasons
 
-    if name in ALWAYS_ASK:
+    # tee is unconditionally in ALWAYS_ASK, but every file it writes is right
+    # there in argv -- so when all of them are scratchpad paths it is no more
+    # of a write than a redirect into the same directory.
+    tee_to_scratch = (name == "tee"
+                      and sandboxed_targets(tee_targets(rest) or []))
+    if name in ALWAYS_ASK and not tee_to_scratch:
         reasons.append(f"{name} {ALWAYS_ASK[name]}")
 
     if name == "sed" and any(SED_INPLACE.match(t) for t in rest):
-        reasons.append("sed edits files in place")
+        if not sandboxed_targets(sed_targets(rest) or []):
+            reasons.append("sed edits files in place")
 
     if name == "uniq" and uniq_writes(rest):
         reasons.append("uniq overwrites its second argument")
@@ -1555,7 +1628,8 @@ def guard_disabled():
 _TEST_RULES = [(pattern, "test") for pattern in (
     "ls", "cd", "cat", "echo", "printf", "grep", "sed", "find", "sort", "awk",
     "diff",
-    "head", "tail", "cut", "wc", "uniq", "[", "test", "git log", "git branch",
+    "head", "tail", "cut", "wc", "uniq", "tee", "[", "test", "git log",
+    "git branch",
     "git merge-base",
     "git grep", "git status", "git show", "git diff", "git rev-parse",
     "git rev-list", "git config", "stat",
@@ -1834,7 +1908,19 @@ _CASES = [
     ("ask",    'echo hi > "$P/notes.md"'),       # variable: not read
     ("ask",    f"echo hi > {_SANDBOX}/../../../../etc/x"),
     ("ask",    f"rm -rf {_SANDBOX}/f"),          # deletion still asks
-    ("ask",    f"sed -i s/a/b/ {_SANDBOX}/f"),   # in-place edit still asks
+    # sed -i and tee name their targets in argv, so they are sandboxed too --
+    # all or nothing: one target outside the scratchpad and the whole command
+    # asks, since a partial write is not a partial risk.
+    ("allow",  f"sed -i s/a/b/ {_SANDBOX}/f"),
+    ("allow",  f"echo x | tee {_SANDBOX}/f"),
+    ("allow",  f"echo x | tee -a {_SANDBOX}/f {_SANDBOX}/g"),
+    ("ask",    "sed -i s/a/b/ /etc/passwd"),
+    ("ask",    f"sed -i s/a/b/ /etc/passwd {_SANDBOX}/f"),
+    ("ask",    "sed -i -e s/a/b/ /etc/passwd"),  # script from a flag
+    ("ask",    "sed -i s/a/b/ f.txt"),           # relative: cwd unprovable
+    ("ask",    f"echo x | tee {_SANDBOX}/f /etc/passwd"),
+    ("ask",    f"sed --bogus -i s/a/b/ {_SANDBOX}/f"),   # unknown flag
+    ("ask",    f"echo x | tee --bogus {_SANDBOX}/f"),
     ("ask",    "echo hi > /tmp/claude-99999999/p/s/scratchpad/f"),  # other uid
 
     # uniq's SECOND positional is an output file it overwrites, so the tool is

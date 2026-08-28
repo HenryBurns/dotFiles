@@ -48,6 +48,7 @@
       "Bash(wc:*)",
       "Bash(sort:*)",
       "Bash(uniq:*)",
+      "Bash(tee:*)",
       "Bash(ruff:*)",
       "Bash([:*)",
       "Bash(test:*)",
