@@ -731,6 +731,26 @@ WRAPPERS = {
         "attached": False,
         "positional": (re.compile(r"^[0-9]+(\.[0-9]+)?[smhd]?$"),),  # DURATION
     },
+    # xargs was long excluded because its arguments come from stdin, where the
+    # guard cannot read them. But the COMMAND is right there in argv, and xargs
+    # passes stdin through as arguments only -- it never re-parses them as shell
+    # syntax, so no redirect or operator can arrive that way. That is the same
+    # property that makes $(...) safe to read. `unknown_args` marks the args it
+    # will receive, so `xargs sed s/a/b/` asks (stdin could supply -i) while
+    # `xargs cat` clears. Optional-argument flags (-i, -e, -l) are deliberately
+    # absent: their arity is ambiguous, so they fall through to "unknown flag"
+    # and xargs stays wrapped for ALWAYS_ASK to catch.
+    "xargs": {
+        "bool": {"-0", "--null", "-r", "--no-run-if-empty", "-t", "--verbose",
+                 "-p", "--interactive", "-x", "--exit", "-o", "--open-tty"},
+        "value": {"-a", "--arg-file", "-d", "--delimiter", "-E", "-I",
+                  "--replace", "-L", "--max-lines", "-n", "--max-args",
+                  "-P", "--max-procs", "-s", "--max-chars",
+                  "--process-slot-var"},
+        "attached": True,
+        "positional": (),
+        "unknown_args": True,
+    },
 }
 
 
@@ -780,6 +800,14 @@ def unwrap_wrappers(tokens):
         if spec is not None:
             start = _unwrap(tokens, index, spec)
             if start is not None:
+                if spec.get("unknown_args"):
+                    # The unwrapped command also receives arguments the guard
+                    # cannot read. Marking them with the same placeholder an
+                    # expansion leaves means the flag checks treat both alike,
+                    # instead of reading the command as if argv were complete.
+                    tokens = (tokens[:start + 1] + [SUBST_PLACEHOLDER]
+                              + tokens[start + 1:])
+                    total = len(tokens)
                 index, changed = start, True
                 continue
         expect_command = (token in OPERATORS or token in CONTROL_KEYWORDS
@@ -1545,6 +1573,20 @@ _CASES = [
     ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
     ("silent", "~/.claude/tools/why-prompt.py ls"),
 
+    # xargs takes its arguments from stdin but its COMMAND from argv, and it
+    # never re-parses stdin as shell syntax -- so the command can be read, with
+    # the arguments marked unknown.
+    ("allow",  "grep -rl alloy conf/*.toml | head -1 | xargs cat"),
+    ("allow",  "xargs -0 grep -c x"),
+    ("allow",  "xargs -I{} cat {}"),
+    ("ask",    "xargs rm < list"),
+    ("ask",    "xargs -n 1 rm"),                  # value flag consumed, rm found
+    ("ask",    "xargs sed -i s/a/b/"),
+    ("ask",    "xargs sed s/a/b/"),               # stdin could supply -i
+    ("ask",    "xargs --bogus cat"),              # unknown flag: stays wrapped
+    ("ask",    "xargs"),                          # no command to attribute
+    ("ask",    "xargs timeout 5 rm"),
+
     # `<(cmd)` substitutes a /dev/fd path, so like $(...) its only new risk is
     # the commands inside. `diff <(a) <(b)` is the whole reason to read it.
     ("allow",  "diff <(git log -1 aa) <(git log -1 bb) | head -30"),
@@ -1813,11 +1855,16 @@ def _selftest():
                 wrapper_errors.append(
                     f"WRAPPERS[{name!r}] positional entries must be compiled "
                     f"regexes; got {shape!r}")
-        if set(spec) - {"bool", "value", "attached", "positional"}:
+        if set(spec) - {"bool", "value", "attached", "positional", "unknown_args"}:
             wrapper_errors.append(
                 f"WRAPPERS[{name!r}] has unrecognized keys: "
                 f"{sorted(set(spec) - {'bool', 'value', 'attached', 'positional'})}")
-        if name in ("nohup", "script", "watch", "xargs", "sudo", "su", "env"):
+        # xargs was on this list for a different reason than the rest: not that
+        # unwrapping it is unsound, but that its arguments are unreadable. That
+        # is now represented (`unknown_args`) rather than avoided, so it moved.
+        # These have no such answer -- nohup and script write, watch takes a
+        # shell string, and sudo/su/env change what the command can do at all.
+        if name in ("nohup", "script", "watch", "sudo", "su", "env"):
             wrapper_errors.append(
                 f"WRAPPERS[{name!r}] must not be unwrapped: it writes, takes a "
                 f"shell string, or changes identity. See the WRAPPERS comment.")
