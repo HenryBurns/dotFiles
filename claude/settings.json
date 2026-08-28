@@ -58,6 +58,7 @@
       "Bash(test:*)",
       "Bash(stat:*)",
       "Bash(pgrep:*)",
+      "Bash(ssh-add:*)",
       "Bash(readlink:*)",
       "Bash(du:*)",
       "Bash(df:*)",

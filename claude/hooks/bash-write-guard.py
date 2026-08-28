@@ -715,6 +715,36 @@ SYSTEMCTL_VALUE_FLAGS = {
 }
 
 
+# ssh-add reports agent state and CHANGES it under one name, and changing is
+# the default: a bare `ssh-add` loads the default identities, -d/-D delete them,
+# -x/-X lock the agent, -s/-e add or remove a PKCS#11 provider, -t sets a
+# lifetime. Only listing reads, so -- as with systemctl -- the read side is
+# named and everything else asks, a bare invocation included.
+SSH_ADD_READ_FLAGS = {"-l", "-L", "-v", "-q"}
+SSH_ADD_LIST_FLAGS = {"-l", "-L"}
+SSH_ADD_VALUE_FLAGS = {"-E"}          # -E md5 / -E sha256: fingerprint format
+
+
+def ssh_add_writes(args):
+    """Why `ssh-add <args>` changes agent state, or "" if it only lists."""
+    listing, index = False, 0
+    while index < len(args):
+        arg = args[index]
+        if not arg.startswith("-"):
+            return f"ssh-add would load the identity file {arg}"
+        base = arg.split("=", 1)[0]
+        if base in SSH_ADD_VALUE_FLAGS:
+            index += 1 if "=" in arg else 2
+            continue
+        if base not in SSH_ADD_READ_FLAGS:
+            return f"ssh-add {base} changes agent state"
+        listing = listing or base in SSH_ADD_LIST_FLAGS
+        index += 1
+    if not listing:
+        return "ssh-add with no -l/-L loads the default identities"
+    return ""
+
+
 def systemctl_writes(args):
     """Why `systemctl <args>` may change state, or "" if it only queries."""
     index = 0
@@ -846,6 +876,11 @@ def segment_reasons(segment):
 
     if name == "ruff":
         why = ruff_writes(rest)
+        if why:
+            reasons.append(why)
+
+    if name == "ssh-add":
+        why = ssh_add_writes(rest)
         if why:
             reasons.append(why)
 
@@ -1682,6 +1717,7 @@ _TEST_RULES = [(pattern, "test") for pattern in (
     "ls", "cd", "cat", "echo", "printf", "grep", "sed", "find", "sort", "awk",
     "diff",
     "head", "tail", "cut", "wc", "uniq", "tee", "paste", "bc", "systemctl",
+    "ssh-add",
     "[", "test",
     "git log",
     "git branch",
@@ -1931,6 +1967,18 @@ _CASES = [
     # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
     ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
     ("silent", "~/.claude/tools/why-prompt.py ls"),
+
+    # ssh-add changes agent state by DEFAULT, so listing is named and the rest
+    # asks -- a bare invocation loads the default identities.
+    ("silent", "ssh-add -l"),
+    ("silent", "ssh-add -L"),
+    ("silent", "ssh-add -l -E sha256"),        # -E takes a value
+    ("ask",    "ssh-add"),                     # loads default identities
+    ("ask",    "ssh-add -D"),
+    ("ask",    "ssh-add -d ~/.ssh/id_ed25519"),
+    ("ask",    "ssh-add -x"),
+    ("ask",    "ssh-add ~/.ssh/id_ed25519"),
+    ("ask",    "ssh-add -t 3600"),
 
     # systemctl reads and changes state under one name, and the write side is
     # the larger one -- so the READ side is named and everything else asks.
