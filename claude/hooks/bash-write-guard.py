@@ -106,7 +106,17 @@ GIT_CONFIG_BOOL_FLAGS = {
 }
 # git subcommands where one flag flips read into write, so an argument that
 # begins with an expansion could be that flag.
-GIT_FLAG_SENSITIVE = {"branch", "config", "fetch"}
+# Subcommands driven by the diff machinery, which all accept --output. The
+# literal flag is caught by GIT_OUTPUT_FLAG below, but a value the guard cannot
+# read could BE that flag: `A=$(cat f); git log $A` was granted outright, and
+# `--output=/tmp/x` there turns an allowlisted read into a file write. Listing
+# them here makes an argument that begins with an expansion ask, exactly as it
+# already did for sed and git branch.
+GIT_DIFF_MACHINERY = {
+    "log", "show", "diff", "format-patch", "range-diff", "whatchanged",
+    "diff-tree", "diff-index", "diff-files",
+}
+GIT_FLAG_SENSITIVE = {"branch", "config", "fetch"} | GIT_DIFF_MACHINERY
 
 # `git fetch` usually only advances remote-tracking refs, so it is allowlisted
 # rather than sitting in GIT_WRITE_SUBCOMMANDS. Two things make it write
@@ -1383,7 +1393,10 @@ _CASES = [
     # significant again, so '(none)' is literal text -- carrying the outer `"`
     # inwards made that `)` close the substitution early and mangled the rest.
     ("allow",  'echo "$(grep -oE \'x[0-9]+\' f || echo \'(none)\')"'),
-    ("allow",  'printf "%s %s" "$(git log -1 "$s")" "$(git log -2 "$s" | cut -c1-9)"'),
+    # Same nesting, but `git log "$s"` now asks on the unreadable argument, so
+    # this pins the quote handling with a subcommand that has no --output.
+    ("allow",  'printf "%s %s" "$(git grep -c x "$s")" "$(git grep -l x "$s" | cut -c1-9)"'),
+    ("ask",    'printf "%s" "$(git log -1 "$s")"'),
     ("ask",    'echo "$(tee /tmp/f || echo \'(none)\')"'),
     # ...and a substitution that is only literal text stays inert.
     ("silent", "echo '$(rm -rf /)'"),
@@ -1432,7 +1445,11 @@ _CASES = [
     ("allow",  "for f in a.txt b.txt; do sed -n 1,5p $f; done"),
     ("allow",  'L=/tmp/x.log; sed -n 1,5p "$L"'),
     ("silent", 'grep -c "$s" f'),                  # grep has no write flag
-    ("silent", 'git log -1 --format=%s "$sha"'),   # nor does git log
+    # git log DOES have one. This case asserted the opposite until `git log
+    # --output=FILE` was run and produced a 524-byte file; every diff-machinery
+    # subcommand accepts it. An unreadable "$sha" could be that flag, so the
+    # idiom now costs a prompt -- the alternative is granting the hole.
+    ("ask",    'git log -1 --format=%s "$sha"'),
     # ...and expansion is exact, so a read-only flag is no longer refused
     ("allow",  "for f in -n; do sed $f 1,5p data.txt; done"),
     ("allow",  "for f in -c; do grep $f pattern data.txt; done"),
@@ -1519,6 +1536,15 @@ _CASES = [
     # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
     ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
     ("silent", "~/.claude/tools/why-prompt.py ls"),
+
+    # An unreadable value reaching the diff machinery could BE --output, which
+    # turns an allowlisted read into a file write. These were granted outright.
+    ("ask",    'A=$(cat f); git log $A'),
+    ("ask",    'A=$(cat f); git diff $A'),
+    ("ask",    'A=$(cat f); git show $A'),
+    ("ask",    'A=$(cat f); git format-patch $A'),
+    # ...but a `for` word is expanded to its literal first, so it still clears.
+    ("allow",  "for s in aa bb; do git log -1 --format=%h $s; done"),
 
     # `git fetch` is allowlisted, so the guard is the ONLY thing standing
     # between a plain fetch and one that moves a local branch.
