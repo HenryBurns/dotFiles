@@ -1628,7 +1628,8 @@ def guard_disabled():
 _TEST_RULES = [(pattern, "test") for pattern in (
     "ls", "cd", "cat", "echo", "printf", "grep", "sed", "find", "sort", "awk",
     "diff",
-    "head", "tail", "cut", "wc", "uniq", "tee", "[", "test", "git log",
+    "head", "tail", "cut", "wc", "uniq", "tee", "paste", "bc", "[", "test",
+    "git log",
     "git branch",
     "git merge-base",
     "git grep", "git status", "git show", "git diff", "git rev-parse",
@@ -1876,6 +1877,12 @@ _CASES = [
     # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
     ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
     ("silent", "~/.claude/tools/why-prompt.py ls"),
+
+    # paste and bc write nothing: every paste flag goes to stdout, and bc's
+    # language has no file output and no shell escape -- unlike awk, which is
+    # why AWK_LIKE needs a check and these do not. Blockers inside a $(...) do
+    # not show up as segments, so this shape is easy to misread.
+    ("allow",  "echo \"$(cut -d: -f2 f | paste -sd+ | bc)\""),
 
     # A redirection is not an argument. Any check that counts positionals saw
     # `2>&1` as two of them, so these ordinary reads reported writes.
