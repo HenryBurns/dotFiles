@@ -460,6 +460,33 @@ def strip_leading_keywords(segment):
     return segment[index:]
 
 
+# A session scratchpad is disposable by construction: created per session under
+# the running user's own /tmp tree, and never part of a repo. Writes landing
+# provably inside one are not worth a prompt. The uid is pinned so another
+# user's /tmp/claude-* directory is not somewhere we will write unprompted.
+SANDBOX_DIR = re.compile(
+    r"^/tmp/claude-%d/[^/]+/[^/]+/scratchpad(/|$)" % os.getuid())
+
+
+def in_sandbox(target):
+    """True only if `target` PROVABLY lands in a disposable scratchpad.
+
+    Absolute and literal only. A relative path depends on the cwd, which a `cd`
+    earlier in the line may have changed to something unreadable, and a path
+    holding `$x` or a substitution is not a path we have read. Neither can be
+    proven, so neither is sandboxed -- the whole value of this is that it never
+    guesses a write is harmless.
+    """
+    if not target.startswith("/") or "$" in target:
+        return False
+    if SUBST_PLACEHOLDER in target:
+        return False
+    # normpath collapses `..` lexically, so `/tmp/claude-N/p/s/scratchpad/../..`
+    # cannot masquerade as inside. realpath is deliberately NOT used: it touches
+    # the filesystem, and the answer would then depend on what exists right now.
+    return bool(SANDBOX_DIR.match(os.path.normpath(target)))
+
+
 def redirects_to_file(segment):
     """True only if a redirect names a real destination file."""
     for index, token in enumerate(segment):
@@ -470,6 +497,8 @@ def redirects_to_file(segment):
             continue  # 2>&1 -- descriptor duplication, writes nothing
         if target in DEV_SINKS or target.startswith("/dev/fd/"):
             continue  # 2>/dev/null -- discarded, not written
+        if in_sandbox(target):
+            continue  # disposable scratch, provably so
         return True
     return False
 
@@ -533,7 +562,9 @@ def uniq_writes(args):
             continue
         positionals.append(token)
         index += 1
-    return len(positionals) >= 2
+    if len(positionals) < 2:
+        return False
+    return not in_sandbox(positionals[1])
 
 
 def git_subcommand_index(rest):
@@ -1471,6 +1502,11 @@ _TEST_RULES = [(pattern, "test") for pattern in (
 
 _TEST_ROOTS = ("/workspace",)
 
+# Built from the running uid rather than written out: SANDBOX_DIR pins the uid,
+# so a literal here would have to carry this machine's, and this file is
+# published. The project and session components are deliberately fictional.
+_SANDBOX = f"/tmp/claude-{os.getuid()}/proj/session/scratchpad"
+
 
 def _verdict(command):
     """What the hook would emit for this command: ask / allow / silent."""
@@ -1704,6 +1740,20 @@ _CASES = [
     # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
     ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
     ("silent", "~/.claude/tools/why-prompt.py ls"),
+
+    # A session scratchpad is disposable, so a write PROVABLY landing in one is
+    # not worth a prompt. Provably means absolute and literal: a relative path
+    # depends on a cwd an earlier `cd` may have changed, and `$P/f` is not a
+    # path we have read. Deletion is never sandboxed.
+    ("allow",  f"echo hi > {_SANDBOX}/notes.md"),
+    ("allow",  f"uniq {_SANDBOX}/a {_SANDBOX}/b"),
+    ("ask",    "echo hi > /tmp/other.txt"),
+    ("ask",    "echo hi > notes.md"),            # relative: cwd unprovable
+    ("ask",    'echo hi > "$P/notes.md"'),       # variable: not read
+    ("ask",    f"echo hi > {_SANDBOX}/../../../../etc/x"),
+    ("ask",    f"rm -rf {_SANDBOX}/f"),          # deletion still asks
+    ("ask",    f"sed -i s/a/b/ {_SANDBOX}/f"),   # in-place edit still asks
+    ("ask",    "echo hi > /tmp/claude-99999999/p/s/scratchpad/f"),  # other uid
 
     # uniq's SECOND positional is an output file it overwrites, so the tool is
     # not unconditionally read-only even though it reads like a filter.

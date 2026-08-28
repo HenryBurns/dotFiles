@@ -31,6 +31,13 @@ So the two error directions are not equals:
 
 When a change trades one for the other, take the over-ask.
 
+One carve-out: a write **provably** landing in a session scratchpad
+(`/tmp/claude-<uid>/*/*/scratchpad`, own uid only) is disposable and does not
+prompt. "Provably" is doing the work — absolute and literal only, since a
+relative path depends on a cwd an earlier `cd` may have changed and `$P/f` is
+not a path anyone has read. Deletion and in-place edits are never sandboxed.
+Extending this to a directory that is *not* disposable would break the model.
+
 ## The verdict contract
 
 Three outcomes. Only `allow` can leak, because only `allow` bypasses the prompt:
