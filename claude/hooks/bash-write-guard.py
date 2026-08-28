@@ -503,6 +503,29 @@ def redirects_to_file(segment):
     return False
 
 
+def without_redirections(segment):
+    """`segment` with redirect operators and their targets removed.
+
+    `2>&1` is three tokens -- `2`, `>&`, `1` -- and none of them is an argument
+    to the command. Any check that counts positionals sees them otherwise:
+    `uniq -c f 2>&1` counted three and reported an output file, and `git config
+    user.name 2>/dev/null` counted two and reported a write. Both were plain
+    reads. redirects_to_file is the one caller that wants them kept.
+    """
+    args, index = [], 0
+    while index < len(segment):
+        token = segment[index]
+        following = segment[index + 1] if index + 1 < len(segment) else ""
+        if token in REDIRECTS:
+            index += 2                       # the operator and its target
+        elif token.isdigit() and following in REDIRECTS:
+            index += 1                       # the fd number in `2>&1`
+        else:
+            args.append(token)
+            index += 1
+    return args
+
+
 def argv0_of(segment):
     """First real command word, skipping leading VAR=value assignments."""
     for index, token in enumerate(segment):
@@ -684,7 +707,10 @@ def segment_reasons(segment):
     if redirects_to_file(segment):
         reasons.append("redirects output to a file")
 
-    name, rest = argv0_of(segment)
+    # Every check below reasons about the command's real arguments, so the
+    # redirections go first -- in one place, rather than each check learning to
+    # skip them. redirects_to_file above is the one that needs them.
+    name, rest = argv0_of(without_redirections(segment))
     if name is None:
         return reasons
 
@@ -1776,6 +1802,14 @@ _CASES = [
     # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
     ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
     ("silent", "~/.claude/tools/why-prompt.py ls"),
+
+    # A redirection is not an argument. Any check that counts positionals saw
+    # `2>&1` as two of them, so these ordinary reads reported writes.
+    ("silent", "uniq -c f 2>&1"),
+    ("silent", "git config user.name 2>/dev/null"),
+    ("ask",    "uniq a b"),                      # still counted when real
+    ("ask",    "git config user.name Henry"),
+    ("ask",    "echo hi > f 2>&1"),              # the redirect itself still asks
 
     # ruff lints (read) and formats/fixes (write) under one command name.
     ("silent", "ruff check --select E9,F --no-cache f.py"),

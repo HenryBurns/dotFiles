@@ -19,3 +19,17 @@ case ":$PATH:" in
 esac
 
 export PATH
+
+# The Bash tool's environment carries no SSH_AUTH_SOCK, so anything reaching the
+# network over ssh cannot authenticate unless the command sets it itself. An
+# inline `SSH_AUTH_SOCK=... cmd` prefix is the obvious workaround and a bad one:
+# the write guard refuses variables that reroute authentication, so every such
+# command prompts, and the variable is repeated on each line where it is easy to
+# get wrong. Setting it once here is both safer and quieter.
+#
+# Guarded on both sides: an inherited value wins, and a missing or dead socket
+# leaves the variable unset rather than pointing ssh at nothing.
+if [ -z "$SSH_AUTH_SOCK" ] && [ -S "$HOME/.ssh/ssh_auth_sock" ]; then
+    SSH_AUTH_SOCK="$HOME/.ssh/ssh_auth_sock"
+    export SSH_AUTH_SOCK
+fi
