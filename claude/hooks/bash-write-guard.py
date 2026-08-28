@@ -499,6 +499,43 @@ GIT_GLOBAL_VALUE = {
 }
 
 
+# `uniq [OPTION]... [INPUT [OUTPUT]]`: the SECOND positional is a file it
+# OVERWRITES. Checked rather than assumed -- `uniq in out` produced the file.
+# Like git config this counts positionals, so every value-taking flag has to be
+# consumed exactly and an unknown flag makes the count unprovable.
+UNIQ_BOOL_FLAGS = {
+    "-c", "--count", "-d", "--repeated", "-D", "--all-repeated",
+    "-i", "--ignore-case", "-u", "--unique", "-z", "--zero-terminated",
+    "--group",
+}
+UNIQ_VALUE_FLAGS = {"-f", "--skip-fields", "-s", "--skip-chars",
+                    "-w", "--check-chars"}
+
+
+def uniq_writes(args):
+    """True if `uniq <args>` names an OUTPUT file to overwrite."""
+    positionals, index = [], 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            positionals.extend(args[index + 1:])
+            break
+        if token.startswith("-") and token != "-":   # bare `-` is stdin
+            base = token.split("=", 1)[0]
+            if base in UNIQ_BOOL_FLAGS:
+                index += 1
+            elif base in UNIQ_VALUE_FLAGS:
+                index += 1 if "=" in token else 2
+            elif len(base) > 2 and base[:2] in UNIQ_VALUE_FLAGS:
+                index += 1                            # attached: -f2, -s3, -w5
+            else:
+                return True
+            continue
+        positionals.append(token)
+        index += 1
+    return len(positionals) >= 2
+
+
 def git_subcommand_index(rest):
     """Index of the real subcommand in `git <globals> SUB ...`, or None.
 
@@ -594,6 +631,9 @@ def segment_reasons(segment):
 
     if name == "sed" and any(SED_INPLACE.match(t) for t in rest):
         reasons.append("sed edits files in place")
+
+    if name == "uniq" and uniq_writes(rest):
+        reasons.append("uniq overwrites its second argument")
 
     if name == "find":
         hit = sorted(FIND_WRITE_FLAGS.intersection(rest))
@@ -1422,7 +1462,7 @@ def guard_disabled():
 _TEST_RULES = [(pattern, "test") for pattern in (
     "ls", "cd", "cat", "echo", "printf", "grep", "sed", "find", "sort", "awk",
     "diff",
-    "head", "tail", "cut", "wc", "[", "test", "git log", "git branch",
+    "head", "tail", "cut", "wc", "uniq", "[", "test", "git log", "git branch",
     "git merge-base",
     "git grep", "git status", "git show", "git diff", "git rev-parse",
     "git rev-list", "git config", "stat",
@@ -1664,6 +1704,17 @@ _CASES = [
     # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
     ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
     ("silent", "~/.claude/tools/why-prompt.py ls"),
+
+    # uniq's SECOND positional is an output file it overwrites, so the tool is
+    # not unconditionally read-only even though it reads like a filter.
+    ("silent", "uniq -c f"),
+    ("silent", "sort f | uniq -c"),
+    ("silent", "uniq -f2 f"),
+    ("silent", "uniq"),
+    ("ask",    "uniq a b"),
+    ("ask",    "uniq -c in.txt out.txt"),
+    ("ask",    "uniq --bogus f"),          # unknown flag: count unprovable
+    ("allow",  'P=/workspace/d; sort "$P/f" | uniq -c | head -3'),
 
     # git's global options sit BEFORE the subcommand, so `-C dir` was landing
     # where every git check looked for it. These produced no reason at all.

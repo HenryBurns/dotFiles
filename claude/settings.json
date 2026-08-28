@@ -47,6 +47,7 @@
       "Bash(awk:*)",
       "Bash(wc:*)",
       "Bash(sort:*)",
+      "Bash(uniq:*)",
       "Bash([:*)",
       "Bash(test:*)",
       "Bash(stat:*)",
