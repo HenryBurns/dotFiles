@@ -567,6 +567,37 @@ def uniq_writes(args):
     return not in_sandbox(positionals[1])
 
 
+# `ruff` reads -- except when it does not. `check --fix` rewrites what it finds,
+# `format` edits in place unless asked for a --check or --diff, `clean` deletes
+# cache directories, and -o writes a report. A prefix rule cannot tell these
+# apart from a lint, so the guard has to.
+RUFF_WRITE_FLAGS = {"--fix", "--fix-only", "-o", "--output-file"}
+RUFF_FORMAT_READONLY = {"--check", "--diff"}
+
+
+def ruff_writes(args):
+    """Why `ruff <args>` writes, or "" if it only reads.
+
+    Subcommands are matched anywhere among the non-flag words rather than by
+    position: a value-taking flag before the subcommand (`--config x format`)
+    would otherwise hide it. The cost is over-asking on a file literally named
+    `format`, which is the right direction to be wrong in.
+    """
+    bases = {arg.split("=", 1)[0] for arg in args if arg.startswith("-")}
+    hit = sorted(bases & RUFF_WRITE_FLAGS)
+    if hit:
+        return f"ruff {' '.join(hit)} rewrites files or writes a report"
+
+    words = {arg for arg in args if not arg.startswith("-")}
+    if "clean" in words:
+        return "ruff clean deletes cache directories"
+    if "format" in words and not (bases & RUFF_FORMAT_READONLY):
+        return "ruff format rewrites files in place"
+    if "server" in words:
+        return "ruff server runs a language server"
+    return ""
+
+
 def git_subcommand_index(rest):
     """Index of the real subcommand in `git <globals> SUB ...`, or None.
 
@@ -665,6 +696,11 @@ def segment_reasons(segment):
 
     if name == "uniq" and uniq_writes(rest):
         reasons.append("uniq overwrites its second argument")
+
+    if name == "ruff":
+        why = ruff_writes(rest)
+        if why:
+            reasons.append(why)
 
     if name == "find":
         hit = sorted(FIND_WRITE_FLAGS.intersection(rest))
@@ -1740,6 +1776,18 @@ _CASES = [
     # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
     ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
     ("silent", "~/.claude/tools/why-prompt.py ls"),
+
+    # ruff lints (read) and formats/fixes (write) under one command name.
+    ("silent", "ruff check --select E9,F --no-cache f.py"),
+    ("silent", "ruff format --check f.py"),
+    ("silent", "ruff format --diff f.py"),
+    ("ask",    "ruff check --fix f.py"),
+    ("ask",    "ruff check --fix-only f.py"),
+    ("ask",    "ruff format f.py"),
+    ("ask",    "ruff clean"),
+    ("ask",    "ruff check -o report.json f.py"),
+    ("ask",    "ruff --config x.toml format f.py"),   # sub behind a value flag
+    ("ask",    "ruff server"),
 
     # A session scratchpad is disposable, so a write PROVABLY landing in one is
     # not worth a prompt. Provably means absolute and literal: a relative path
