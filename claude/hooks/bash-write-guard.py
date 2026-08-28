@@ -1104,12 +1104,12 @@ MAX_SUBST_DEPTH = 2
 
 
 def substitution_spans(text):
-    """(start, end) of each outermost $(...) the shell would expand.
+    """(start, end) of each outermost $(...) or unquoted <(...) the shell expands.
 
     Returns None -- meaning refuse -- for anything outside the supported subset:
-    backticks, <(...) process substitution, unbalanced quotes or parens. Every
-    ambiguity resolves to None rather than to an empty list, so a command we
-    cannot read confidently is declined instead of waved through.
+    backticks, >(...) output process substitution, unbalanced quotes or parens.
+    Every ambiguity resolves to None rather than to an empty list, so a command
+    we cannot read confidently is declined instead of waved through.
 
     Escapes follow the shell: inside double quotes `\\$(...)` is a literal
     dollar and is correctly NOT reported as a substitution, while `\\\\$(...)`
@@ -1143,9 +1143,16 @@ def substitution_spans(text):
             index += 1
             continue
 
-        if char == "`" or text.startswith("<(", index) or text.startswith(">(", index):
+        if char == "`" or text.startswith(">(", index):
             return None
-        if text.startswith("$(", index):
+        # `<(cmd)` runs cmd and substitutes a /dev/fd path. Like $(...), the
+        # result is data rather than syntax, so its only new risk is the
+        # commands inside the parens -- which the recursion below reads. It is
+        # a substitution only UNQUOTED: inside double quotes bash leaves the
+        # text literal, so treating it as one there would inspect a string that
+        # never runs. `>(cmd)` still refuses: that one is fed output, not read.
+        proc_sub = quote is None and text.startswith("<(", index)
+        if proc_sub or text.startswith("$(", index):
             if depth == 0:
                 start = index
             depth += 1
@@ -1303,6 +1310,7 @@ def guard_disabled():
 # or loses a rule. The point is to pin the guard's own logic, not the config.
 _TEST_RULES = [(pattern, "test") for pattern in (
     "ls", "cd", "cat", "echo", "printf", "grep", "sed", "find", "sort", "awk",
+    "diff",
     "head", "tail", "cut", "wc", "git log", "git branch", "git merge-base",
     "git grep", "git status", "git show", "git diff", "git rev-parse",
     "git rev-list", "git config", "stat",
@@ -1536,6 +1544,16 @@ _CASES = [
     # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
     ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
     ("silent", "~/.claude/tools/why-prompt.py ls"),
+
+    # `<(cmd)` substitutes a /dev/fd path, so like $(...) its only new risk is
+    # the commands inside. `diff <(a) <(b)` is the whole reason to read it.
+    ("allow",  "diff <(git log -1 aa) <(git log -1 bb) | head -30"),
+    ("allow",  "diff <(sort a) <(sort b)"),
+    ("ask",    "diff <(rm -rf /tmp/x) f"),        # inner write still caught
+    ("ask",    "diff <(git log $A) f"),           # and so is a smuggled flag
+    ("silent", 'echo "<(rm -rf x)"'),             # quoted: literal, never runs
+    ("ask",    "cat > >(tee /tmp/f)"),            # >(...) is fed output: refused
+    ("ask",    "diff `git show a` f"),            # backticks still refused
 
     # An unreadable value reaching the diff machinery could BE --output, which
     # turns an allowlisted read into a file write. These were granted outright.

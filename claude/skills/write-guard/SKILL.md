@@ -41,8 +41,11 @@ Three outcomes. Only `allow` can leak, because only `allow` bypasses the prompt:
 | `allow` | "I understand *every* command position here, and all are read-only and already allowlisted." |
 | `silent` | "I do not understand this construct." The rules decide alone. |
 
-`silent` is for genuine incomprehension — a backtick, a process substitution, `case/esac`,
-nesting past the depth cap. Deferring is honest there.
+`silent` is for genuine incomprehension of a construct that no rule covers either, so deferring
+changes nothing — `case/esac`, `while`. But incomprehension of a construct that can *hide*
+arbitrary commands is an `ask`, not a `silent`: a backtick, `>(cmd)`, or nesting past the depth
+cap all report "cannot inspect this for writes". The difference is whether staying quiet would
+let something unread through, which for an allowlisted command it would.
 
 **Never downgrade a positive identification to `silent`.** If the guard worked out that a
 construct is write-capable, it must say `ask`. Throwing away something it actually knows is

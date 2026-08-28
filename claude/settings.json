@@ -15,6 +15,7 @@
       "Bash(grep:*)",
       "Bash(sed:*)",
       "Bash(cut:*)",
+      "Bash(diff:*)",
       "Bash(echo:*)",
       "Bash(find:*)",
       "Bash(git log:*)",

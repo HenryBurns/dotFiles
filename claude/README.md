@@ -66,9 +66,15 @@ never itself be a leak:
 | `allow` | `permissionDecision: allow` | **bypasses** the prompt |
 | `silent` | nothing | the rules decide |
 
-The guard stays silent on anything it does not fully understand. Backticks,
-`<(...)`, unbalanced quotes and nesting past the depth cap all resolve to `ask`,
-never to `allow`.
+The guard never guesses toward `allow`. Backticks, `>(cmd)`, unbalanced quotes
+and nesting past the depth cap resolve to `ask` — they can hide commands it
+cannot read, and for an allowlisted command silence would let them through.
+
+`$(...)` and unquoted `<(...)` are read rather than refused: both substitute
+data (output, or a `/dev/fd` path) rather than syntax, so their only new risk is
+the commands inside the parens, and those are checked like any others. That is
+what lets `diff <(git show a) <(git show b)` clear while `diff <(rm -rf x) f`
+still asks.
 
 ### Tests
 
