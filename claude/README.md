@@ -5,11 +5,16 @@ machine- and workplace-specific half stays local and is listed under
 [What is deliberately absent](#what-is-deliberately-absent).
 
 ```sh
-python3 claude/install.py            # repo  -> ~/.claude   (merges, backs up)
-python3 claude/sync.py               # ~/.claude -> repo    (strips local bits)
-python3 claude/sync.py --check       # report drift, write nothing
+claude/install.py            # repo  -> ~/.claude   (merges, backs up)
+claude/sync.py               # ~/.claude -> repo    (strips local bits)
+claude/sync.py --check       # report drift, write nothing
 ~/.claude/hooks/bash-write-guard.py --test
 ```
+
+Every script here carries a shebang and is executable, so none of them needs a
+`python3` prefix. That is not cosmetic: the write guard treats an interpreter as
+able to do anything, so `python3 claude/sync.py --check` prompts while
+`claude/sync.py --check` does not.
 
 `settings.json` is read **at startup only** — restart Claude Code after
 installing. Hook files are re-read on every command and need no restart.
