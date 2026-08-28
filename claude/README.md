@@ -42,6 +42,19 @@ It reports the per-segment rule match, out-of-workspace paths, command
 substitution, the write-guard verdict, and warns if `settings.json` was modified
 after the running process started.
 
+To check a batch of commands instead of one, or to assert what they should
+produce:
+
+```sh
+~/.claude/tools/guard-verdict.py 'sed -i s/a/b/ /tmp/x' 'echo hi | tee /etc/x'
+~/.claude/tools/guard-verdict.py --quiet --expect ask 'rm -rf /tmp/x' 'mv a b'
+```
+
+It runs each command through the guard the way Claude Code does — a JSON
+`tool_input` on stdin — so it reports what the hook really emits rather than
+what importing the module suggests. Commands are only ever *judged*, never run.
+`--expect` exits non-zero on any mismatch, so it can gate a check.
+
 ## The write guard
 
 `hooks/bash-write-guard.py` is a `PreToolUse` hook doing two narrow jobs, both

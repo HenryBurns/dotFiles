@@ -36,6 +36,7 @@ FILES = [
     ("hooks/bash-write-guard.py", 0o755),
     ("hooks/unguarded-worktrees", 0o644),
     ("tools/why-prompt.py", 0o755),
+    ("tools/guard-verdict.py", 0o755),
     ("skills/write-guard/SKILL.md", 0o644),
 ]
 
