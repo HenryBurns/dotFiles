@@ -45,6 +45,7 @@
       "Bash(tr:*)",
       "Bash(paste:*)",
       "Bash(bc:*)",
+      "Bash(systemctl:*)",
       "Bash(zstdgrep:*)",
       "Bash(awk:*)",
       "Bash(wc:*)",

@@ -688,6 +688,54 @@ def ruff_writes(args):
     return ""
 
 
+# systemctl queries and changes service state under one command name. Unlike
+# git and ruff, its write side is far larger and more varied than its read side
+# -- start, stop, restart, enable, mask, daemon-reload, isolate, set-property,
+# reboot ... -- so this names what READS and treats everything else as a write.
+# An unknown subcommand is then a prompt rather than a silent state change.
+SYSTEMCTL_READONLY = {
+    "is-active", "is-enabled", "is-failed", "is-system-running",
+    "status", "show", "cat", "help", "get-default", "show-environment",
+    "list-units", "list-unit-files", "list-timers", "list-sockets",
+    "list-jobs", "list-dependencies", "list-machines", "list-paths",
+    "list-automounts",
+}
+SYSTEMCTL_BOOL_FLAGS = {
+    "--user", "--system", "--global", "--no-pager", "--no-legend",
+    "--no-ask-password", "--no-block", "--full", "-l", "--all", "-a",
+    "--plain", "--quiet", "-q", "--recursive", "-r", "--reverse", "--failed",
+    "--value", "--show-types", "--version", "--help", "-h", "--runtime",
+    "--dry-run", "--wait", "--no-reload", "--with-dependencies",
+}
+SYSTEMCTL_VALUE_FLAGS = {
+    "--type", "-t", "--state", "--property", "-p", "--output", "-o",
+    "--host", "-H", "--machine", "-M", "--signal", "-s", "--kill-who",
+    "--job-mode", "--root", "--image", "--lines", "-n", "--since", "--until",
+    "--what",
+}
+
+
+def systemctl_writes(args):
+    """Why `systemctl <args>` may change state, or "" if it only queries."""
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        token = args[index]
+        base = token.split("=", 1)[0]
+        if base in SYSTEMCTL_BOOL_FLAGS and "=" not in token:
+            index += 1
+        elif base in SYSTEMCTL_VALUE_FLAGS:
+            index += 1 if "=" in token else 2
+        else:
+            return ("systemctl is passed an option the guard cannot attribute "
+                    "to a subcommand")
+    if index >= len(args):
+        return ""                       # bare `systemctl` lists units
+    sub = args[index]
+    if sub in SYSTEMCTL_READONLY:
+        return ""
+    return f"systemctl {sub} is not a known read-only subcommand"
+
+
 def git_subcommand_index(rest):
     """Index of the real subcommand in `git <globals> SUB ...`, or None.
 
@@ -798,6 +846,11 @@ def segment_reasons(segment):
 
     if name == "ruff":
         why = ruff_writes(rest)
+        if why:
+            reasons.append(why)
+
+    if name == "systemctl":
+        why = systemctl_writes(rest)
         if why:
             reasons.append(why)
 
@@ -1628,7 +1681,8 @@ def guard_disabled():
 _TEST_RULES = [(pattern, "test") for pattern in (
     "ls", "cd", "cat", "echo", "printf", "grep", "sed", "find", "sort", "awk",
     "diff",
-    "head", "tail", "cut", "wc", "uniq", "tee", "paste", "bc", "[", "test",
+    "head", "tail", "cut", "wc", "uniq", "tee", "paste", "bc", "systemctl",
+    "[", "test",
     "git log",
     "git branch",
     "git merge-base",
@@ -1877,6 +1931,19 @@ _CASES = [
     # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
     ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
     ("silent", "~/.claude/tools/why-prompt.py ls"),
+
+    # systemctl reads and changes state under one name, and the write side is
+    # the larger one -- so the READ side is named and everything else asks.
+    # silent, not allow: nothing here needs a grant, so the rule decides.
+    ("silent", "systemctl --user is-active ssh-auth-sock.timer"),
+    ("silent", "systemctl --user list-timers --no-pager"),
+    ("silent", "systemctl -p MainPID show foo"),   # value flag before the sub
+    ("silent", "systemctl"),                       # bare: lists units
+    ("ask",    "systemctl --user restart foo"),
+    ("ask",    "systemctl --user enable --now foo"),
+    ("ask",    "systemctl daemon-reload"),
+    ("ask",    "systemctl --user stop foo"),
+    ("ask",    "systemctl --bogus is-active foo"), # option: cannot attribute
 
     # paste and bc write nothing: every paste flag goes to stdout, and bc's
     # language has no file output and no shell escape -- unlike awk, which is
