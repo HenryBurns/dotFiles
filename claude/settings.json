@@ -22,6 +22,7 @@
       "Bash(git diff:*)",
       "Bash(git show:*)",
       "Bash(git branch:*)",
+      "Bash(git fetch:*)",
       "Bash(git merge-base:*)",
       "Bash(git grep:*)",
       "Bash(git cat-file:*)",

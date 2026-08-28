@@ -67,15 +67,16 @@ AWK_WRITE = re.compile(r"system\s*\(|\bprintf?\s*>|>\s*[\"']|\|\s*[\"']")
 GIT_BRANCH_DESTRUCTIVE = {"-d", "-D", "--delete", "-m", "-M", "--move",
                           "-f", "--force", "-c", "-C", "--copy"}
 
-# git subcommands that always write. None are allowlisted, so they already
-# prompt; naming them makes the prompt say why, and stops a compound being
-# granted because every OTHER command in it is read-only. Deliberately excludes
-# subcommands with read-only forms (worktree list, remote show, stash list,
-# reflog show, tag -l) rather than report something false about them.
+# git subcommands that always write. Naming them makes the prompt say why, and
+# stops a compound being granted because every OTHER command in it is read-only.
+# Deliberately excludes subcommands with read-only forms (worktree list, remote
+# show, stash list, reflog show, tag -l) rather than report something false
+# about them -- and `fetch`, which left this set when it was allowlisted: see
+# GIT_FETCH_WRITE_FLAGS for the forms that still ask.
 GIT_WRITE_SUBCOMMANDS = {
     "checkout", "switch", "restore", "reset", "clean", "apply", "am",
     "rm", "mv", "commit", "merge", "rebase", "cherry-pick", "revert",
-    "pull", "push", "fetch", "clone", "init", "gc", "prune", "repack",
+    "pull", "push", "clone", "init", "gc", "prune", "repack",
     "update-ref", "update-index", "write-tree", "commit-tree", "mktree",
     "filter-branch", "replace", "checkout-index", "sparse-checkout",
 }
@@ -105,7 +106,33 @@ GIT_CONFIG_BOOL_FLAGS = {
 }
 # git subcommands where one flag flips read into write, so an argument that
 # begins with an expansion could be that flag.
-GIT_FLAG_SENSITIVE = {"branch", "config"}
+GIT_FLAG_SENSITIVE = {"branch", "config", "fetch"}
+
+# `git fetch` usually only advances remote-tracking refs, so it is allowlisted
+# rather than sitting in GIT_WRITE_SUBCOMMANDS. Two things make it write
+# something you care about, and neither is visible from the subcommand name:
+#
+#   * a refspec with a destination -- `git fetch origin master:master` moves
+#     your LOCAL master. On a shared base branch that is exactly the accident
+#     the prompt is for.
+#   * the flags below, which delete tracking refs (--prune), overwrite a
+#     non-fast-forward (--force), or write config (--set-upstream).
+#
+# Enumerated rather than defaulting unknown flags to "write", following the
+# GIT_BRANCH_DESTRUCTIVE precedent: nothing here counts positionals, so an
+# unrecognized flag cannot throw the parse off.
+GIT_FETCH_WRITE_FLAGS = {
+    "-p", "--prune", "--prune-tags", "-f", "--force",
+    "-u", "--update-head-ok", "--set-upstream", "--stdin", "--refmap",
+}
+# Value-taking flags whose value may legitimately contain a colon, e.g.
+# `--filter blob:none`. Skipping the value stops the refspec test below from
+# reading it as a destination.
+GIT_FETCH_VALUE_FLAGS = {
+    "--filter", "--depth", "--deepen", "--shallow-since", "--shallow-exclude",
+    "--negotiation-tip", "--upload-pack", "--server-option", "-o", "-j",
+    "--jobs",
+}
 
 # The diff machinery behind log/show/diff/format-patch can write its output to
 # a file, so an allowlisted `git diff` is not unconditionally read-only.
@@ -425,6 +452,33 @@ def argv0_of(segment):
     return None, []
 
 
+def git_fetch_writes(args):
+    """Why `git fetch <args>` writes more than tracking refs, or "" if it does not."""
+    positional_only, index = False, 0
+    while index < len(args):
+        token = args[index]
+        if not positional_only and token == "--":
+            positional_only = True
+            index += 1
+            continue
+        if not positional_only and token.startswith("-"):
+            base = token.split("=", 1)[0]
+            if base in GIT_FETCH_WRITE_FLAGS:
+                return f"git fetch {base} writes local refs or config"
+            if base in GIT_FETCH_VALUE_FLAGS and "=" not in token:
+                index += 2
+                continue
+            index += 1
+            continue
+        # A colon means a destination refspec (writes a local ref) or an scp-style
+        # URL (fetches from somewhere unreviewed). Both are worth the prompt, so
+        # the over-ask on a URL is deliberate rather than a gap.
+        if ":" in token:
+            return f"git fetch {token} writes a local ref, or fetches from a URL"
+        index += 1
+    return ""
+
+
 def git_config_writes(args):
     """True if `git config <args>` could modify configuration."""
     positionals, index = [], 0
@@ -507,6 +561,10 @@ def segment_reasons(segment):
                                f"or moves a branch")
         if rest[:1] and rest[0] in GIT_WRITE_SUBCOMMANDS:
             reasons.append(f"git {rest[0]} writes")
+        if rest[:1] == ["fetch"]:
+            why = git_fetch_writes(rest[1:])
+            if why:
+                reasons.append(why)
         if rest[:1] == ["config"] and git_config_writes(rest[1:]):
             reasons.append("git config writes configuration")
         if any(GIT_OUTPUT_FLAG.match(token) for token in rest):
@@ -1461,6 +1519,22 @@ _CASES = [
     # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
     ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
     ("silent", "~/.claude/tools/why-prompt.py ls"),
+
+    # `git fetch` is allowlisted, so the guard is the ONLY thing standing
+    # between a plain fetch and one that moves a local branch.
+    ("silent", "git fetch origin feature/one feature/two"),
+    ("silent", "git fetch --all"),
+    ("silent", "git fetch -q --depth 1 origin main"),
+    ("silent", "git fetch --filter blob:none origin main"),   # value, not refspec
+    ("silent", "git fetch --filter=blob:none origin main"),
+    ("ask",    "git fetch origin master:master"),             # writes LOCAL master
+    ("ask",    "git fetch --prune origin"),
+    ("ask",    "git fetch -p origin"),
+    ("ask",    "git fetch --set-upstream origin"),            # writes config
+    ("ask",    "git fetch --force origin a:b"),
+    ("ask",    "git fetch --refmap=+refs/heads/*:refs/heads/* origin"),
+    ("ask",    "git fetch git@host:repo.git"),                # deliberate over-ask
+    ("ask",    'git fetch origin "$SPEC"'),                   # refspec via expansion
     ("ask",    "/bin/rm -f x"),                   # matched on the basename
     ("ask",    'echo "$(rm -f x)"'),              # inside a substitution
     ("silent", "zstdgrep foo f.zst"),             # not `zstd`; still read-only
