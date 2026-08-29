@@ -1532,7 +1532,13 @@ def segment_permitted(segment, prefix, deny):
             if matches(normalized, deny)[0]:
                 return False, False
             if matches(normalized, prefix)[0]:
-                return True, False
+                # Granted, not merely permitted. The plain path above can say
+                # "no grant needed" because the rules matched the literal text
+                # and will match it again; here they did NOT, and saying
+                # nothing sends `git -C dir status` to a prompt on the strength
+                # of a match we just made. Recognizing the command and then
+                # withholding that is the one thing this guard must not do.
+                return True, True
     if LOCAL_GRANT is not None:
         try:
             if LOCAL_GRANT(segment, GUARD_VIEW):
@@ -2103,6 +2109,15 @@ _CASES = [
     ("ask",    "git --git-dir=/tmp/x/.git fetch --prune origin"),
     ("ask",    "git --bogus-opt log"),          # unsizeable option: cannot attribute
     ("allow",  "git -C /tmp/x rev-parse HEAD"), # same op as `git rev-parse`
+    # A directory INSIDE the workspace is the case that exposed the second half
+    # of this: the normalized match was made and then dropped as "no grant
+    # needed", so the prompt came anyway. The cases above passed regardless,
+    # because a path outside the workspace sets needs_grant by another route.
+    ("allow",  "git -C /workspace/d status --short"),
+    ("allow",  "git -C /workspace/d diff claude/settings.json"),
+    ("allow",  "git -C /workspace/d log --oneline -1"),
+    ("ask",    "git -C /workspace/d push origin master"),   # still a write
+    ("ask",    "git -C /workspace/d remote set-url origin git@x:y.git"),
     # `continue` and friends are builtins, so no rule can ever name them.
     ("allow",  'for f in a b; do [ -e "$f" ] || continue; cat "$f"; done'),
 
