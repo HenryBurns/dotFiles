@@ -1157,6 +1157,17 @@ def unwrap_wrappers(tokens):
     expect_command = True
     while index < total:
         token = tokens[index]
+        # `A=1 timeout 5 grep x f` is still at a command position after the
+        # assignment -- bash allows any number of VAR=value words before the
+        # command name. Treating one as an ordinary argument hid the wrapper
+        # from this pass, so `timeout` was judged as an unattributable command
+        # and the whole line asked. The assignment itself is left in place and
+        # is still vetted by safe_assignment in executable_commands; all this
+        # decides is that a wrapper may follow it.
+        if expect_command and ASSIGNMENT.match(token):
+            out.append(token)
+            index += 1
+            continue
         spec = WRAPPERS.get(token.rsplit("/", 1)[-1]) if expect_command else None
         if spec is not None:
             start = _unwrap(tokens, index, spec)
@@ -2197,6 +2208,16 @@ _CASES = [
     # wrappers nest: the command position is re-examined after each removal
     ("allow",  "timeout 5 timeout 3 grep -c x f"),
     ("ask",    "timeout 5 timeout 3 rm -rf /tmp/x"),
+    # an environment prefix does not end the command position, so the wrapper
+    # behind it is still unwrapped. Getting this wrong made `VAR=x timeout N cmd`
+    # ask for the wrapper's sake and silently voided a grant on cmd.
+    ("allow",  "A=1 timeout 5 grep -c x f"),
+    ("allow",  "A=1 B=2 timeout 5 grep -c x f"),
+    ("ask",    "A=1 timeout 5 rm -rf /tmp/x"),   # the real command still caught
+    ("ask",    "A=1 timeout 5 sed -i s/a/b/ f"),
+    ("silent", "PATH=/evil timeout 5 grep -c x f"),  # unsafe name still refused
+    # only in command position: an argument that looks like one is an argument
+    ("silent", "grep -n A=1 f"),
     # the other wrappers stay opaque on purpose
     ("ask",    "nice 40 grep -c x f"),
     ("ask",    "stdbuf -o0 grep -c x f"),

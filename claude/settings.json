@@ -60,6 +60,7 @@
       "Bash(pgrep:*)",
       "Bash(ssh-add:*)",
       "Bash(readlink:*)",
+      "Bash(which:*)",
       "Bash(du:*)",
       "Bash(df:*)",
       "Bash(git config:*)",
