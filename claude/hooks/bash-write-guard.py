@@ -116,7 +116,19 @@ GIT_DIFF_MACHINERY = {
     "log", "show", "diff", "format-patch", "range-diff", "whatchanged",
     "diff-tree", "diff-index", "diff-files",
 }
-GIT_FLAG_SENSITIVE = {"branch", "config", "fetch"} | GIT_DIFF_MACHINERY
+GIT_FLAG_SENSITIVE = {"branch", "config", "fetch", "remote"} | GIT_DIFF_MACHINERY
+
+# `git remote` reads in its bare, `show` and `get-url` forms and writes in all
+# the rest. Unlike git config, the write is selected by a POSITIONAL rather than
+# a flag, so the subcommand has to be located before anything can be said about
+# it -- and only -v may legally precede it. Any other option and we cannot say
+# which word is the subcommand, so it counts as a write. `set-url` is the one
+# that earns this its own check: it silently repoints where a later push goes.
+GIT_REMOTE_WRITE_SUBCOMMANDS = {
+    "add", "rename", "remove", "rm", "set-head", "set-branches", "set-url",
+    "prune", "update",
+}
+GIT_REMOTE_BOOL_FLAGS = {"-v", "--verbose"}
 
 # `git fetch` usually only advances remote-tracking refs, so it is allowlisted
 # rather than sitting in GIT_WRITE_SUBCOMMANDS. Two things make it write
@@ -813,6 +825,19 @@ def git_fetch_writes(args):
     return ""
 
 
+def git_remote_writes(args):
+    """Reason `git remote <args>` changes a remote, or None if it only reads."""
+    for arg in args:
+        if not arg.startswith("-"):
+            if arg in GIT_REMOTE_WRITE_SUBCOMMANDS:
+                return f"git remote {arg} changes a configured remote"
+            return None  # bare, `show` or `get-url`: reads only
+        if arg not in GIT_REMOTE_BOOL_FLAGS:
+            return ("git remote is passed an option the guard cannot size, so "
+                    "its subcommand cannot be located")
+    return None  # no subcommand at all: `git remote` / `git remote -v`
+
+
 def git_config_writes(args):
     """True if `git config <args>` could modify configuration."""
     positionals, index = [], 0
@@ -934,6 +959,10 @@ def segment_reasons(segment):
             reasons.append(f"git {sub} writes")
         if sub == "fetch":
             why = git_fetch_writes(sub_args)
+            if why:
+                reasons.append(why)
+        if sub == "remote":
+            why = git_remote_writes(sub_args)
             if why:
                 reasons.append(why)
         if sub == "config" and git_config_writes(sub_args):
@@ -1734,7 +1763,7 @@ _TEST_RULES = [(pattern, "test") for pattern in (
     "git branch",
     "git merge-base",
     "git grep", "git status", "git show", "git diff", "git rev-parse",
-    "git rev-list", "git config", "stat",
+    "git rev-list", "git config", "git remote", "stat",
 )]
 
 
@@ -2252,6 +2281,23 @@ _CASES = [
     ("ask",    "git config set user.email a@b.c"),     # newer write subcommand
     ("ask",    "git config unset user.email"),
     ("ask",    "git config --bogus user.email"),       # arity unknown -> unprovable
+    # `git remote`: the write is chosen by a positional, not a flag
+    ("silent", "git remote"),
+    ("silent", "git remote -v"),
+    ("silent", "git remote show origin"),
+    ("silent", "git remote get-url origin"),
+    ("allow",  'echo "$(git remote -v)"'),
+    ("ask",    "git remote add origin git@example.com:x/y.git"),
+    ("ask",    "git remote set-url origin git@example.com:z/w.git"),
+    ("ask",    "git remote remove origin"),
+    ("ask",    "git remote rename origin upstream"),
+    ("ask",    "git remote set-head origin -a"),
+    ("ask",    "git remote set-branches origin master"),
+    ("ask",    "git remote prune origin"),
+    ("ask",    "git remote update"),
+    ("ask",    "git remote -v add origin git@example.com:x/y.git"),
+    ("ask",    "git remote --bogus show origin"),      # cannot locate the subcommand
+    ("ask",    "git remote $SUB origin"),              # could expand to set-url
     # an argument beginning with an expansion could be --unset, and unquoted it
     # would even word-split into `--unset user.email`
     ("ask",    "git config $(echo --unset) user.email"),

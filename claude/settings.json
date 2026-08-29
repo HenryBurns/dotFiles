@@ -64,6 +64,7 @@
       "Bash(du:*)",
       "Bash(df:*)",
       "Bash(git config:*)",
+      "Bash(git remote:*)",
       "Bash(~/.claude/tools/why-prompt.py:*)",
       "Bash(~/.claude/tools/guard-verdict.py:*)",
       "Bash(~/.claude/hooks/bash-write-guard.py:*)",
