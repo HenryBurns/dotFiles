@@ -113,13 +113,22 @@ def scrub_settings(settings):
 
     # env values are the one place a real absolute path is load-bearing:
     # BASH_ENV must be absolute, since bash does not expand ~ in it.
+    #
+    # Home can have more than one spelling -- here $HOME is /u/<user> while the
+    # realpath is /home/<user> -- and a value written with the other one sailed
+    # past this and was caught downstream by the leak scanner. Match every
+    # spelling, longest first so a prefix of another cannot win.
+    homes = sorted({HOME, os.path.realpath(HOME)}, key=len, reverse=True)
     env = out.get("env")
     if isinstance(env, dict):
         out["env"] = {}
         for key, value in env.items():
-            if isinstance(value, str) and value.startswith(HOME):
-                value = "__HOME__" + value[len(HOME):]
-                dropped.append(f"env.{key} (absolute path -> __HOME__)")
+            if isinstance(value, str):
+                for home in homes:
+                    if value.startswith(home):
+                        value = "__HOME__" + value[len(home):]
+                        dropped.append(f"env.{key} (absolute path -> __HOME__)")
+                        break
             out["env"][key] = value
 
     return out, dropped
