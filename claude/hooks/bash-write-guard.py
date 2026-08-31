@@ -197,6 +197,18 @@ ALWAYS_ASK = {
     "gzip": "replaces the file with a compressed one",
     "gunzip": "replaces the file with an uncompressed one",
     "zstd": "replaces the file with a compressed one",
+    # -- outward-facing tooling --------------------------------------------
+    # Every orchestrator invocation asks, read-only subcommands included. This
+    # is not a claim that `whoami` writes: orchestrator is how work reaches
+    # shared branches, its subcommands are not reliably separable into readers
+    # and writers from argv alone, and a wrong guess here lands on branches
+    # other teams build on. Asking on all of it is cheap -- it is a
+    # hand-driven tool, run a few times a day, and its SSO login is manual
+    # anyway. Entries here beat any allow rule, and argv0_of basenames the
+    # command word, so an absolute path to the tool matches this too -- which
+    # is the form that gets typed, since ~/.local/bin is not on the PATH the
+    # Bash tool's shell ends up with.
+    "orchestrator": "submits and manages work on shared branches",
     # -- editors: interactive, and they write ------------------------------
     "ed": "is an editor", "ex": "is an editor", "vi": "is an editor",
     "vim": "is an editor", "nano": "is an editor", "emacs": "is an editor",
@@ -326,6 +338,26 @@ def safe_assignment(name, value):
     # what may stand in for `$st` -- so the body still judges `$st` as opaque.
     pieces = value.split()
     return bool(pieces) and not any(p.startswith("-") for p in pieces)
+
+
+def exported_assignments(tokens, index, total):
+    """({name: value}, index past them) for `export NAME=value ...`, else None.
+
+    None means "not the shape this models", which leaves `export` to
+    REFUSED_WORDS. An empty dict is a bare `export`, which only lists the
+    environment -- a read, like printenv.
+    """
+    found = {}
+    while index < total and tokens[index] not in OPERATORS:
+        assigned = ASSIGNMENT.match(tokens[index])
+        if not assigned:
+            return None
+        name, value = assigned.group(1), assigned.group(2)
+        if not safe_assignment(name, value):
+            return None
+        found[name] = value
+        index += 1
+    return found, index
 
 
 def readable_assignment(name, value):
@@ -1078,6 +1110,12 @@ def expand_assignments(tokens):
     expect_command = True
     for token in tokens:
         if expect_command:
+            # `export A=/workspace/d` records A for the same reason `A=...` does;
+            # the word after it is still a command position. executable_commands
+            # is what decides whether the export is acceptable at all.
+            if token == "export":
+                out.append(token)
+                continue
             assigned = ASSIGNMENT.match(token)
             if assigned and readable_assignment(assigned.group(1),
                                                 assigned.group(2)):
@@ -1309,6 +1347,24 @@ def executable_commands(tokens):
         # Like the reserved words below, these are special only where a command
         # name may start. Checking them everywhere refused `stat -f -c %T .`
         # and `find . -name x` outright, because `.` is the source builtin.
+        # `export NAME=value` is an assignment that outlives the command, so it
+        # gets the assignment vetting and nothing more: safe_assignment asks the
+        # only question that matters -- can this name change what runs or how --
+        # and the answer does not depend on how long the value lives. So
+        # `export PATH=...` is refused here exactly as `PATH=... cmd` is.
+        #
+        # Only that shape is intercepted. `export -p`, `export -f fn`,
+        # `export $x` and a bare `export NAME` (which re-exports a value we
+        # never saw) are all something else, and fall through to REFUSED_WORDS
+        # immediately below, which still lists export for them.
+        if expect_command and token == "export":
+            exported = exported_assignments(tokens, index + 1, total)
+            if exported is not None:
+                found, index = exported
+                assignments.update(found)
+                saw_assignment = True
+                continue
+
         if token in REFUSED_WORDS and expect_command:
             return None, False
 
@@ -1965,6 +2021,24 @@ _CASES = [
     ("allow",  "L=*.c; ls $L"),                           # globs: harmless
     ("ask",    "L=-i; sed $L f"),                         # would become a flag
     ("ask",    'L="a -i"; sed $L f'),                     # flag in a later piece
+    # `export NAME=value` is judged as the assignment it is. The value outlives
+    # the command, but safe_assignment asks whether the NAME can steer what runs
+    # -- and that answer does not depend on how long the value lives.
+    ("allow",  "export FOO=bar"),                         # sets nothing that runs
+    ("allow",  "export FOO=bar BAZ=qux; grep -c x f"),
+    ("allow",  "export D=/workspace/d; grep -c x $D/f"),  # value still expands
+    ("silent", "export PATH=/evil; ls"),                  # refused as a prefix is
+    ("silent", "export LD_PRELOAD=/tmp/x.so; ls"),
+    ("silent", "export GIT_EXTERNAL_DIFF=rm; git diff"),
+    ("silent", "export IFS=x; ls"),
+    ("ask",    "export FOO=-i; sed $FOO s/a/b/ f"),       # opaque, flag-sensitive
+    ("ask",    "export FOO=bar; rm -rf /tmp/x"),          # the command still runs
+    # shapes this does NOT model, left to REFUSED_WORDS
+    ("silent", "export -p"),                              # a listing
+    ("silent", "export -f fn"),                           # a function
+    ("silent", "export $x"),                              # unknown name
+    ("silent", "export FOO"),                             # re-exports an unseen value
+    ("silent", "grep -n export f"),                       # argument, not a builtin
     # a value from $(...) is opaque, not forbidden: recorded as the placeholder
     # so a flag-sensitive command refuses it and everything else is fine
     ("allow",  'L=$(cat /tmp/p); cat "$L"'),
@@ -2004,6 +2078,19 @@ _CASES = [
     ("ask",    "chmod 0755 f"),
     ("ask",    "ln -s a b"),
     ("ask",    "tar -xzf x.tar.gz"),
+    # orchestrator asks on EVERY subcommand, reads included -- see the table.
+    # These pin the ways a command word can arrive, since each bypasses a
+    # different check: the bare name, an absolute path (basenamed by argv0_of,
+    # and the only form that works here because ~/.local/bin is not on PATH),
+    # behind a wrapper, inside a substitution, and behind an env prefix.
+    ("ask",    "orchestrator whoami"),
+    ("ask",    "orchestrator submit --branch users/me/x"),
+    ("ask",    "/opt/local/bin/orchestrator whoami"),
+    ("ask",    "timeout 60 orchestrator whoami"),
+    ("ask",    'echo "$(orchestrator whoami)"'),
+    ("ask",    "A=1 orchestrator whoami"),
+    ("ask",    "ls -la && orchestrator whoami"),
+    ("silent", "grep -n orchestrator f"),   # an argument is just an argument
     ("ask",    "patch -p1 < d.patch"),
     ("ask",    "python3 -c 'print(1)'"),
     ("ask",    "bash -c 'echo hi'"),

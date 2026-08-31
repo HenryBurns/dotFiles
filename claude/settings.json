@@ -1,6 +1,7 @@
 {
   "env": {
-    "BASH_ENV": "__HOME__/.claude/bash_env.sh"
+    "BASH_ENV": "__HOME__/.claude/bash_env.sh",
+    "SSH_AUTH_SOCK": "__HOME__/.ssh/ssh_auth_sock"
   },
   "permissions": {
     "allow": [
@@ -52,6 +53,7 @@
       "Bash(wc:*)",
       "Bash(sort:*)",
       "Bash(uniq:*)",
+      "Bash(comm:*)",
       "Bash(tee:*)",
       "Bash(ruff:*)",
       "Bash([:*)",
@@ -63,6 +65,7 @@
       "Bash(which:*)",
       "Bash(du:*)",
       "Bash(df:*)",
+      "Bash(mountpoint:*)",
       "Bash(git config:*)",
       "Bash(git remote:*)",
       "Bash(~/.claude/tools/why-prompt.py:*)",
