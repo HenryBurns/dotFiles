@@ -45,163 +45,29 @@ REDIRECTS = {">", ">>", ">|", ">&", "&>", "&>>"}
 # stderr and `2>&1` just duplicates a descriptor -- both are read-only idioms.
 DEV_SINKS = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd"}
 
-FIND_WRITE_FLAGS = {
-    "-exec", "-execdir", "-delete", "-ok", "-okdir",
-    "-fprintf", "-fls", "-fprint", "-fprint0",
-}
-# sed short flags bundle, and -i takes an optional suffix: -i -i.bak -ni -sni
-SED_INPLACE = re.compile(r"^-[A-Za-z]*i|^--in-place")
-# sort writes in place with -o/--output: sort -o f, sort -of, sort --output=f
-SORT_OUTPUT = re.compile(r"^-o.*|^--output(=|$)")
-
-# awk is a language, not a filter: it can redirect and shell out from inside
-# the program text, where shlex has already stripped the quotes that hid it.
-AWK_LIKE = {"awk", "gawk", "mawk", "nawk"}
-AWK_WRITE = re.compile(r"system\s*\(|\bprintf?\s*>|>\s*[\"']|\|\s*[\"']")
-
-# `git branch` is read-only except for the flags that delete, rename or move.
-# -f/--force is the subtle one: `git branch -f name start` RESETS an existing
-# branch to start, discarding where it pointed. It was missing here, so it was
-# allowlisted by Bash(git branch:*) and produced no reason -- an unprompted
-# write to a ref.
-GIT_BRANCH_DESTRUCTIVE = {"-d", "-D", "--delete", "-m", "-M", "--move",
-                          "-f", "--force", "-c", "-C", "--copy"}
-
-# git subcommands that always write. Naming them makes the prompt say why, and
-# stops a compound being granted because every OTHER command in it is read-only.
-# Deliberately excludes subcommands with read-only forms (worktree list, remote
-# show, stash list, reflog show, tag -l) rather than report something false
-# about them -- and `fetch`, which left this set when it was allowlisted: see
-# GIT_FETCH_WRITE_FLAGS for the forms that still ask.
-GIT_WRITE_SUBCOMMANDS = {
-    "checkout", "switch", "restore", "reset", "clean", "apply", "am",
-    "rm", "mv", "commit", "merge", "rebase", "cherry-pick", "revert",
-    "pull", "push", "clone", "init", "gc", "prune", "repack",
-    "update-ref", "update-index", "write-tree", "commit-tree", "mktree",
-    "filter-branch", "replace", "checkout-index", "sparse-checkout",
-}
-# `git config` reads in its query forms and writes in the rest. Three ways it
-# writes: an explicit write flag, one of the newer write subcommands, or the
-# bare `git config KEY VALUE` two-argument form, which sets with NO flag at all.
-# That last one forces us to count positionals, which means every value-taking
-# flag has to be consumed correctly -- so an unrecognized flag makes the count
-# unprovable and counts as a write.
-GIT_CONFIG_WRITE_FLAGS = {
-    "--add", "--unset", "--unset-all", "--replace-all",
-    "--rename-section", "--remove-section", "--edit", "-e",
-}
-GIT_CONFIG_WRITE_SUBCOMMANDS = {
-    "set", "unset", "add", "edit", "rename-section", "remove-section",
-}
-GIT_CONFIG_READ_SUBCOMMANDS = {"get", "list"}
-GIT_CONFIG_VALUE_FLAGS = {
-    "-f", "--file", "--blob", "-t", "--type", "--default", "--comment",
-}
-GIT_CONFIG_BOOL_FLAGS = {
-    "--global", "--system", "--local", "--worktree", "-z", "--null",
-    "--name-only", "--show-origin", "--show-scope", "--includes",
-    "--no-includes", "--fixed-value", "--all", "--regexp", "--no-type",
-    "--list", "-l", "--get", "--get-all", "--get-regexp", "--get-urlmatch",
-    "--bool", "--int", "--bool-or-int", "--path", "--expiry-date",
-}
-# git subcommands where one flag flips read into write, so an argument that
-# begins with an expansion could be that flag.
-# Subcommands driven by the diff machinery, which all accept --output. The
-# literal flag is caught by GIT_OUTPUT_FLAG below, but a value the guard cannot
-# read could BE that flag: `A=$(cat f); git log $A` was granted outright, and
-# `--output=/tmp/x` there turns an allowlisted read into a file write. Listing
-# them here makes an argument that begins with an expansion ask, exactly as it
-# already did for sed and git branch.
-GIT_DIFF_MACHINERY = {
-    "log", "show", "diff", "format-patch", "range-diff", "whatchanged",
-    "diff-tree", "diff-index", "diff-files",
-}
-# shortlog is NOT diff machinery -- it has its own option parser -- but it takes
-# the same --output, so an expansion in its arguments carries the same risk.
-# Kept out of the set above so that name stays true to what it names.
-GIT_FLAG_SENSITIVE = ({"branch", "config", "fetch", "remote", "ls-remote",
-                       "shortlog", "archive", "bundle"}
-                      | GIT_DIFF_MACHINERY)
-
-# `git remote` reads in its bare, `show` and `get-url` forms and writes in all
-# the rest. Unlike git config, the write is selected by a POSITIONAL rather than
-# a flag, so the subcommand has to be located before anything can be said about
-# it -- and only -v may legally precede it. Any other option and we cannot say
-# which word is the subcommand, so it counts as a write. `set-url` is the one
-# that earns this its own check: it silently repoints where a later push goes.
-GIT_REMOTE_WRITE_SUBCOMMANDS = {
-    "add", "rename", "remove", "rm", "set-head", "set-branches", "set-url",
-    "prune", "update",
-}
-GIT_REMOTE_BOOL_FLAGS = {"-v", "--verbose"}
-
-# `git ls-remote` lists refs on a remote and writes nothing on this machine, so
-# it is allowlisted rather than sitting in GIT_WRITE_SUBCOMMANDS. Two of its
-# flags are not a lookup: --upload-pack names a program for the REMOTE to run,
-# and --server-option hands the server an opaque instruction to act on. Neither
-# can touch this machine, and a server is free to refuse both -- but they stop
-# the command being the plain ref lookup the allow rule implies, and "the other
-# end decides" is not a property this guard can verify.
+# What the guard knows about individual tools lives in a sibling module, both
+# to keep this file readable and to keep each table beside the reasoning for
+# it. Referenced as `T.NAME` rather than star-imported: in a file that decides
+# whether a program may run, "where did this set come from" has to be
+# answerable by reading.
 #
-# Enumerated rather than defaulting unknown flags to "write": nothing here
-# counts positionals, so an unrecognized flag cannot throw the parse off. Same
-# reasoning as GIT_FETCH_WRITE_FLAGS.
-GIT_LS_REMOTE_ASK_FLAGS = {"--upload-pack", "-o", "--server-option"}
+# A failure here must NOT propagate as an uncaught import error. That exits
+# non-zero with no stdout, which PreToolUse treats as a non-blocking error --
+# the allow rules would then decide alone, and they permit `sed -i` under
+# Bash(sed:*). So it is recorded and re-raised inside _decide(), where the
+# fail-closed handler turns it into "ask". _fail_closed_ok() covers that path.
+_TABLES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "bash-write-guard-tables.py")
 
-# `git fetch` usually only advances remote-tracking refs, so it is allowlisted
-# rather than sitting in GIT_WRITE_SUBCOMMANDS. Two things make it write
-# something you care about, and neither is visible from the subcommand name:
-#
-#   * a refspec with a destination -- `git fetch origin master:master` moves
-#     your LOCAL master. On a shared base branch that is exactly the accident
-#     the prompt is for.
-#   * the flags below, which delete tracking refs (--prune), overwrite a
-#     non-fast-forward (--force), or write config (--set-upstream).
-#
-# Enumerated rather than defaulting unknown flags to "write", following the
-# GIT_BRANCH_DESTRUCTIVE precedent: nothing here counts positionals, so an
-# unrecognized flag cannot throw the parse off.
-GIT_FETCH_WRITE_FLAGS = {
-    "-p", "--prune", "--prune-tags", "-f", "--force",
-    "-u", "--update-head-ok", "--set-upstream", "--stdin", "--refmap",
-}
-# Value-taking flags whose value may legitimately contain a colon, e.g.
-# `--filter blob:none`. Skipping the value stops the refspec test below from
-# reading it as a destination.
-GIT_FETCH_VALUE_FLAGS = {
-    "--filter", "--depth", "--deepen", "--shallow-since", "--shallow-exclude",
-    "--negotiation-tip", "--upload-pack", "--server-option", "-o", "-j",
-    "--jobs",
-}
-
-# The diff machinery behind log/show/diff/format-patch can write its output to
-# a file, so an allowlisted `git diff` is not unconditionally read-only.
-# --output-directory is format-patch's spelling and writes a whole directory of
-# patches. Anchored exactly rather than as a --output prefix because git does
-# NOT accept abbreviated long options -- `--out=`, `--outp=` and `--outpu=` are
-# all rejected outright (measured), so there is no shorter spelling to catch.
-GIT_OUTPUT_FLAG = re.compile(r"^--output(-directory)?(=|$)")
-
-# `-o` is the same write in two subcommands -- `git archive -o f.tar` and
-# `git format-patch -o dir/` -- but it is NOT a write everywhere: it is
-# --server-option for ls-remote and push, and the remote's name for clone. So
-# this is scoped by subcommand rather than folded into GIT_OUTPUT_FLAG. The
-# attached form `-of.tar` is a single token to parse-options, hence the prefix
-# test rather than equality.
-GIT_SHORT_OUTPUT_SUBCOMMANDS = {"archive", "format-patch"}
-
-# `git archive` streams to stdout and is a read -- until -o/--output names a
-# file. --exec names the program git runs on the REMOTE end, which is the same
-# "the other end decides" that GIT_LS_REMOTE_ASK_FLAGS refuses to vouch for.
-GIT_ARCHIVE_ASK_FLAGS = {"--exec"}
-
-# `git bundle` dispatches on a positional like `git remote` does. create writes
-# a bundle file named by the next positional -- no flag involved, so nothing
-# else in this hook would catch it -- and unbundle writes objects and refs into
-# the repository. verify and list-heads only read.
-GIT_BUNDLE_WRITE_SUBCOMMANDS = {"create", "unbundle"}
-GIT_BUNDLE_READ_SUBCOMMANDS = {"verify", "list-heads"}
-GIT_BUNDLE_BOOL_FLAGS = {"-q", "--quiet", "--progress"}
+try:
+    import importlib.util as _importlib_util
+    _spec = _importlib_util.spec_from_file_location(
+        "bash_write_guard_tables", _TABLES_FILE)
+    T = _importlib_util.module_from_spec(_spec)
+    _spec.loader.exec_module(T)
+    TABLES_ERROR = None
+except Exception as _exc:            # any failure at all: recorded, not raised
+    T, TABLES_ERROR = None, _exc
 
 # Commands that write, delete, or change metadata whatever flags they are given.
 # None of these are allowlisted, so they already prompt; naming them here is
@@ -321,22 +187,65 @@ CONTROL_KEYWORDS = {"do", "then", "elif", "else", "if", "fi", "done",
 # to add beyond declining to resolve it.
 NOOP_BUILTINS = {"continue", "break", "true", "false", ":", "read"}
 
+# `set` has two jobs and only one of them is safe. Changing shell OPTIONS
+# (`set -o pipefail`, `set -e`) writes nothing and hands nothing to a later
+# command. Setting POSITIONAL PARAMETERS does: `set -- -i` followed by
+# `sed $1 f` smuggles a flag exactly the way `for f in -i` does, and `$1` is
+# never resolved. So the option forms are enumerated and everything else --
+# `set --`, `set a b`, a bare `set` that dumps every variable -- still refuses.
+# Single-letter option flags, which bash lets you combine: `set -euo pipefail`
+# is one token carrying three of them. Matched letter by letter so a cluster
+# needs no separate entry, and so an unknown letter anywhere in one refuses.
+SET_SHELL_LETTERS = set("abefhkmnptuvxBCEHPTo")
+SET_OPTION_NAMES = {
+    "allexport", "braceexpand", "emacs", "errexit", "errtrace", "functrace",
+    "hashall", "histexpand", "history", "ignoreeof", "interactive-comments",
+    "keyword", "monitor", "noclobber", "noexec", "noglob", "nolog", "notify",
+    "nounset", "onecmd", "physical", "pipefail", "posix", "privileged",
+    "verbose", "vi", "xtrace",
+}
+
+
+def set_is_noop(args):
+    """True if `set <args>` only changes shell options.
+
+    A trailing `-o` with no name is allowed: that spelling PRINTS the current
+    options, which is a read. An empty argument list is not -- a bare `set`
+    dumps every shell variable, and while that writes nothing it is not a
+    shape worth waving through.
+    """
+    expect_option_name = False
+    for arg in args:
+        if expect_option_name:
+            if arg not in SET_OPTION_NAMES:
+                return False
+            expect_option_name = False
+            continue
+        if len(arg) < 2 or arg[0] not in "-+":
+            return False       # `--`, `a`, and anything else positional
+        letters = arg[1:]
+        if not all(letter in SET_SHELL_LETTERS for letter in letters):
+            return False
+        # `o` takes the option name that follows, so it is only unambiguous as
+        # the last letter of a cluster. `-oe` is refused rather than guessed at.
+        if "o" in letters[:-1]:
+            return False
+        expect_option_name = letters.endswith("o")
+    return bool(args)
+
 # Anything here means we refuse to reason about the command at all. Either it
 # rewrites the execution environment (eval, export), or it is a construct
 # outside the recognized subset (case, select), or it hides a command position.
 REFUSED_WORDS = {
     "eval", "exec", "source", ".", "trap", "alias", "unalias", "command",
     "case", "esac", "select", "function", "coproc",
-    "export", "declare", "typeset", "local", "set", "unset", "shift",
+    "export", "declare", "typeset", "local", "unset", "shift",
     "mapfile", "readarray", "xargs", "env", "nohup", "sudo", "time",
 }
 
-# Commands where a single flag flips read into write, so an argument the guard
-# cannot see through is a real hazard: `sed $(echo -i) s/a/b/ f` edits in place
-# while every check above tests the token, not what it expands to. A flag has
-# to start a token, so only an argument that BEGINS with an expansion can
-# become one -- `sed -n "1,$(echo 5)p" f` never can.
-FLAG_SENSITIVE = {"sed", "sort", "find"} | AWK_LIKE
+# T.FLAG_SENSITIVE (sed/sort/find/awk) is defined with the tool tables: it is
+# built from T.AWK_LIKE, and evaluating that here would touch the tables before
+# _decide() can check they loaded.
 
 # ---------------------------------------------------------------------------
 # Variable assignments
@@ -638,7 +547,7 @@ def sed_targets(args):
                 script_from_flag = True
             if base in SED_VALUE_FLAGS:
                 index += 1 if "=" in token else 2
-            elif base in SED_BOOL_FLAGS or SED_INPLACE.match(token):
+            elif base in SED_BOOL_FLAGS or T.SED_INPLACE.match(token):
                 index += 1
             else:
                 return None
@@ -720,18 +629,6 @@ def argv0_of(segment):
     return None, []
 
 
-# git's own options sit BEFORE the subcommand, so `git -C dir reset --hard`
-# puts `-C` where every check below looked for the subcommand name. reset,
-# branch -D and the rest were producing no write reason at all; only the fact
-# that `git -C ...` matches no allow rule was prompting them.
-GIT_GLOBAL_BOOL = {
-    "-p", "--paginate", "-P", "--no-pager", "--bare", "--no-replace-objects",
-    "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs",
-    "--icase-pathspecs", "--no-optional-locks",
-}
-GIT_GLOBAL_VALUE = {
-    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env",
-}
 
 
 # `uniq [OPTION]... [INPUT [OUTPUT]]`: the SECOND positional is a file it
@@ -777,7 +674,10 @@ def uniq_writes(args):
 # `format` edits in place unless asked for a --check or --diff, `clean` deletes
 # cache directories, and -o writes a report. A prefix rule cannot tell these
 # apart from a lint, so the guard has to.
-RUFF_WRITE_FLAGS = {"--fix", "--fix-only", "-o", "--output-file"}
+# -o/--output-file is NOT here: it names an output path, so it is judged by
+# where that path lands. --fix rewrites the source files ruff was pointed at,
+# which no output path makes disposable.
+RUFF_WRITE_FLAGS = {"--fix", "--fix-only"}
 RUFF_FORMAT_READONLY = {"--check", "--diff"}
 
 
@@ -792,7 +692,9 @@ def ruff_writes(args):
     bases = {arg.split("=", 1)[0] for arg in args if arg.startswith("-")}
     hit = sorted(bases & RUFF_WRITE_FLAGS)
     if hit:
-        return f"ruff {' '.join(hit)} rewrites files or writes a report"
+        return f"ruff {' '.join(hit)} rewrites files"
+    if writes_outside_sandbox(args, T.RUFF_OUTPUT_FLAGS):
+        return "ruff -o writes a report to a file"
 
     words = {arg for arg in args if not arg.startswith("-")}
     if "clean" in words:
@@ -893,24 +795,15 @@ def git_subcommand_index(rest):
     while index < len(rest) and rest[index].startswith("-"):
         token = rest[index]
         base = token.split("=", 1)[0]
-        if base in GIT_GLOBAL_BOOL and "=" not in token:
+        if base in T.GIT_GLOBAL_BOOL and "=" not in token:
             index += 1
-        elif base in GIT_GLOBAL_VALUE:
+        elif base in T.GIT_GLOBAL_VALUE:
             index += 1 if "=" in token else 2
         else:
             return None
     return index if index < len(rest) else None
 
 
-# Global options that make git print something and exit without ever reaching
-# a subcommand, so "cannot attribute this option to a subcommand" is the wrong
-# complaint: there is no subcommand to attribute it to.
-GIT_TERMINAL_OPTIONS = {
-    "-v", "--version", "-h", "--help",
-    "--exec-path", "--html-path", "--man-path", "--info-path",
-}
-# Only these may precede one, and only in their bare form.
-GIT_PAGER_OPTIONS = {"-p", "--paginate", "-P", "--no-pager"}
 
 
 def git_prints_and_exits(rest):
@@ -924,9 +817,9 @@ def git_prints_and_exits(rest):
     option that could take a value can never hide a subcommand behind it.
     """
     for token in rest:
-        if token in GIT_TERMINAL_OPTIONS:
+        if token in T.GIT_TERMINAL_OPTIONS:
             return True
-        if token in GIT_PAGER_OPTIONS:
+        if token in T.GIT_PAGER_OPTIONS:
             continue
         return False
     return False
@@ -943,9 +836,9 @@ def git_fetch_writes(args):
             continue
         if not positional_only and token.startswith("-"):
             base = token.split("=", 1)[0]
-            if base in GIT_FETCH_WRITE_FLAGS:
+            if base in T.GIT_FETCH_WRITE_FLAGS:
                 return f"git fetch {base} writes local refs or config"
-            if base in GIT_FETCH_VALUE_FLAGS and "=" not in token:
+            if base in T.GIT_FETCH_VALUE_FLAGS and "=" not in token:
                 index += 2
                 continue
             index += 1
@@ -970,14 +863,38 @@ def git_fetch_writes(args):
 # job_status has no HTTP write verb, no open(), no subprocess. Its whole
 # surface is one positional id plus five store_true flags, listed here so a
 # sixth appearing in a later version refuses instead of riding along.
-ORCHESTRATOR_READ_SUBCOMMANDS = {"request_status"}
-ORCHESTRATOR_READ_FLAGS = {"--show-history", "--commits", "--color",
-                           "--orig-commits", "--sort-by-name"}
+# queue_status: two http_session.get calls and log.info to stdout. No HTTP
+# write verb, no open(), no subprocess of its own. Its whole surface is one
+# optional `to_branch` positional plus the three flags below.
+#
+# --commits and --orig-commits are NOT pure reads, in either subcommand: both
+# reach print_commits -> ensure_commits_fetched, which runs
+# `git fetch origin --quiet <sha>` when a commit is not present locally. They
+# stay granted because that is the same fetch `Bash(git fetch:*)` already
+# allows -- no destination refspec and none of T.GIT_FETCH_WRITE_FLAGS -- but it
+# is written down because "status query" does not suggest a network fetch.
+#
+# Flags are per subcommand rather than one shared set: --color and
+# --sort-by-name come from _configure_common_status_arguments, which
+# queue_status does not call, and a set that overstates what a subcommand
+# accepts is a set nobody can check against the source.
+ORCHESTRATOR_READ_FLAGS = {
+    "request_status": {"--show-history", "--commits", "--color",
+                       "--orig-commits", "--sort-by-name"},
+    "queue_status": {"--commits", "--fail-summary", "--num-completed"},
+}
+# `to_branch` defaults to the cwd's upstream, so a bare `orchestrator
+# queue_status` is a vetted shape. A bare `request_status` is not: argparse
+# requires its id.
+ORCHESTRATOR_OPTIONAL_POSITIONAL = {"queue_status"}
 
 
 def orchestrator_reads(args):
     """True if `orchestrator <args>` is a subcommand proven to only read."""
-    if not args or args[0] not in ORCHESTRATOR_READ_SUBCOMMANDS:
+    if not args:
+        return False
+    flags = ORCHESTRATOR_READ_FLAGS.get(args[0])
+    if flags is None:
         return False
     saw_id = False
     for arg in args[1:]:
@@ -986,20 +903,22 @@ def orchestrator_reads(args):
         if arg.startswith("$") or SUBST_PLACEHOLDER in arg:
             return False
         if arg.startswith("-"):
-            if arg not in ORCHESTRATOR_READ_FLAGS:
+            # `--num-completed=5` is one token; split so the value does not
+            # make a vetted flag look like an unknown one.
+            if arg.split("=", 1)[0] not in flags:
                 return False
             continue
-        saw_id = True   # the request id: it only steers what is read
-    # No id at all is not the shape that was vetted -- argparse would reject it
-    # anyway, and guessing at an unrecognized shape is what this avoids.
-    return saw_id
+        saw_id = True   # an id, a branch, or a flag's value: all only steer
+    # No positional at all is not the shape that was vetted, unless the
+    # subcommand documents a default for it.
+    return saw_id or args[0] in ORCHESTRATOR_OPTIONAL_POSITIONAL
 
 
 def git_ls_remote_writes(args):
     """Reason `git ls-remote <args>` is more than a ref lookup, or None."""
     for arg in args:
         base = arg.split("=", 1)[0]
-        if base in GIT_LS_REMOTE_ASK_FLAGS:
+        if base in T.GIT_LS_REMOTE_ASK_FLAGS:
             return (f"git ls-remote {base} hands the remote a program to run "
                     f"or an option to act on")
     return None
@@ -1009,10 +928,10 @@ def git_remote_writes(args):
     """Reason `git remote <args>` changes a remote, or None if it only reads."""
     for arg in args:
         if not arg.startswith("-"):
-            if arg in GIT_REMOTE_WRITE_SUBCOMMANDS:
+            if arg in T.GIT_REMOTE_WRITE_SUBCOMMANDS:
                 return f"git remote {arg} changes a configured remote"
             return None  # bare, `show` or `get-url`: reads only
-        if arg not in GIT_REMOTE_BOOL_FLAGS:
+        if arg not in T.GIT_REMOTE_BOOL_FLAGS:
             return ("git remote is passed an option the guard cannot size, so "
                     "its subcommand cannot be located")
     return None  # no subcommand at all: `git remote` / `git remote -v`
@@ -1021,8 +940,62 @@ def git_remote_writes(args):
 def git_archive_writes(args):
     """Reason `git archive <args>` is more than a stream to stdout, or None."""
     for arg in args:
-        if arg.split("=", 1)[0] in GIT_ARCHIVE_ASK_FLAGS:
+        if arg.split("=", 1)[0] in T.GIT_ARCHIVE_ASK_FLAGS:
             return "git archive --exec names a program for the remote to run"
+    return None
+
+
+def flag_values(args, flags):
+    """Every value `flags` are given in `args`, in all three spellings.
+
+    `--output=f`, `--output f`, and the attached short `-of`. A flag with no
+    value at all yields None: `--output` at the end of a line names nothing,
+    and a target that cannot be read cannot be proven disposable.
+
+    Attached values are read for SHORT flags only. `--outputfoo` is a different
+    option, not `--output` carrying a value, and treating it as one would
+    invent a target out of a typo.
+
+    One function for every tool that names an output file, because they had
+    drifted: git's targets were checked against the scratchpad while sort's and
+    ruff's were not, so the same disposable destination asked for two of them
+    and not the others.
+    """
+    values, index = [], 0
+    while index < len(args):
+        token = args[index]
+        base, sep, attached = token.partition("=")
+        if sep and base in flags:
+            values.append(attached)
+        elif token in flags:
+            values.append(args[index + 1] if index + 1 < len(args) else None)
+            index += 1
+        elif (len(token) > 2 and not token.startswith("--")
+              and token[:2] in flags):
+            values.append(token[2:])
+        index += 1
+    return values
+
+
+def writes_outside_sandbox(args, flags):
+    """True if `flags` name an output file that is not provably disposable."""
+    targets = flag_values(args, flags)
+    return bool(targets) and (None in targets
+                              or not sandboxed_targets(targets))
+
+
+def git_bundle_target(args):
+    """The bundle file `git bundle create <args>` writes, or None.
+
+    None for every other subcommand, `unbundle` included: that one writes
+    objects and refs INTO the repository, which no scratchpad makes disposable.
+    """
+    if not args or args[0] != "create":
+        return None
+    for arg in args[1:]:
+        if arg.startswith("-"):
+            continue      # --progress and --version=N are not the file
+        return arg
     return None
 
 
@@ -1030,12 +1003,12 @@ def git_bundle_writes(args):
     """Reason `git bundle <args>` writes, or None if it only reads."""
     for arg in args:
         if not arg.startswith("-"):
-            if arg in GIT_BUNDLE_READ_SUBCOMMANDS:
+            if arg in T.GIT_BUNDLE_READ_SUBCOMMANDS:
                 return None
             # create and unbundle both write; so does anything we do not
             # recognize, since a subcommand we cannot name we cannot vouch for.
             return f"git bundle {arg} writes a bundle file or repository objects"
-        if arg not in GIT_BUNDLE_BOOL_FLAGS:
+        if arg not in T.GIT_BUNDLE_BOOL_FLAGS:
             return ("git bundle is passed an option the guard cannot size, so "
                     "its subcommand cannot be located")
     # No subcommand at all: `git bundle` alone is a usage error, not a write.
@@ -1052,21 +1025,21 @@ def git_config_writes(args):
             break
         if token.startswith("-"):
             base = token.split("=", 1)[0]
-            if base in GIT_CONFIG_WRITE_FLAGS:
+            if base in T.GIT_CONFIG_WRITE_FLAGS:
                 return True
-            if base in GIT_CONFIG_VALUE_FLAGS:
+            if base in T.GIT_CONFIG_VALUE_FLAGS:
                 index += 1 if "=" in token else 2
                 continue
-            if base in GIT_CONFIG_BOOL_FLAGS:
+            if base in T.GIT_CONFIG_BOOL_FLAGS:
                 index += 1
                 continue
             return True  # unknown flag: the positional count is unprovable
         positionals.append(token)
         index += 1
 
-    if positionals[:1] and positionals[0] in GIT_CONFIG_WRITE_SUBCOMMANDS:
+    if positionals[:1] and positionals[0] in T.GIT_CONFIG_WRITE_SUBCOMMANDS:
         return True
-    if positionals[:1] and positionals[0] in GIT_CONFIG_READ_SUBCOMMANDS:
+    if positionals[:1] and positionals[0] in T.GIT_CONFIG_READ_SUBCOMMANDS:
         return False
     # `git config KEY VALUE` sets; `git config KEY` reads.
     return len(positionals) >= 2
@@ -1099,7 +1072,7 @@ def segment_reasons(segment):
     if name in ALWAYS_ASK and not tee_to_scratch and not orchestrator_read:
         reasons.append(f"{name} {ALWAYS_ASK[name]}")
 
-    if name == "sed" and any(SED_INPLACE.match(t) for t in rest):
+    if name == "sed" and any(T.SED_INPLACE.match(t) for t in rest):
         if not sandboxed_targets(sed_targets(rest) or []):
             reasons.append("sed edits files in place")
 
@@ -1122,15 +1095,15 @@ def segment_reasons(segment):
             reasons.append(why)
 
     if name == "find":
-        hit = sorted(FIND_WRITE_FLAGS.intersection(rest))
+        hit = sorted(T.FIND_WRITE_FLAGS.intersection(rest))
         if hit:
             reasons.append(f"find {' '.join(hit)} runs commands or deletes")
 
-    if name == "sort" and any(SORT_OUTPUT.match(t) for t in rest):
+    if name == "sort" and writes_outside_sandbox(rest, T.SORT_OUTPUT_FLAGS):
         reasons.append("sort -o writes to a file")
 
-    if name in AWK_LIKE:
-        if any(AWK_WRITE.search(t) for t in rest):
+    if name in T.AWK_LIKE:
+        if any(T.AWK_WRITE.search(t) for t in rest):
             reasons.append("awk program redirects or shells out")
         # -f reads the program from a file this hook never opens, so its
         # redirects and system() calls are invisible to the check above.
@@ -1143,9 +1116,9 @@ def segment_reasons(segment):
     sub = rest[sub_at] if sub_at is not None else None
     sub_args = rest[sub_at + 1:] if sub_at is not None else []
 
-    git_sub = sub in GIT_FLAG_SENSITIVE
+    git_sub = sub in T.GIT_FLAG_SENSITIVE
     flag_args = sub_args if git_sub else rest
-    if name in FLAG_SENSITIVE or git_sub:
+    if name in T.FLAG_SENSITIVE or git_sub:
         if any(a.startswith("$") or a.startswith(SUBST_PLACEHOLDER)
                for a in flag_args):
             reasons.append(f"{name} takes an argument from an expansion the "
@@ -1158,11 +1131,11 @@ def segment_reasons(segment):
             reasons.append("git is passed an option the guard cannot attribute "
                            "to a subcommand")
         if sub == "branch":
-            hit = sorted(GIT_BRANCH_DESTRUCTIVE.intersection(sub_args))
+            hit = sorted(T.GIT_BRANCH_DESTRUCTIVE.intersection(sub_args))
             if hit:
                 reasons.append(f"git branch {' '.join(hit)} deletes, renames "
                                f"or moves a branch")
-        if sub in GIT_WRITE_SUBCOMMANDS:
+        if sub in T.GIT_WRITE_SUBCOMMANDS:
             reasons.append(f"git {sub} writes")
         if sub == "fetch":
             why = git_fetch_writes(sub_args)
@@ -1182,15 +1155,19 @@ def segment_reasons(segment):
             why = git_archive_writes(sub_args)
             if why:
                 reasons.append(why)
+        # A write is still a write, but one landing PROVABLY in the session
+        # scratchpad is disposable -- the same exemption redirects and `tee`
+        # already get, applied to the flags that name a file. An unreadable or
+        # missing value gives no target to prove, so it keeps asking.
         if sub == "bundle":
             why = git_bundle_writes(sub_args)
-            if why:
+            target = git_bundle_target(sub_args)
+            if why and not (target and in_sandbox(target)):
                 reasons.append(why)
-        if any(GIT_OUTPUT_FLAG.match(token) for token in rest):
+        if writes_outside_sandbox(rest, T.GIT_OUTPUT_FLAGS):
             reasons.append("git --output writes its output to a file")
-        if sub in GIT_SHORT_OUTPUT_SUBCOMMANDS and any(
-                token.startswith("-o") and not token.startswith("--")
-                for token in sub_args):
+        if (sub in T.GIT_SHORT_OUTPUT_SUBCOMMANDS
+                and writes_outside_sandbox(sub_args, T.GIT_SHORT_OUTPUT_FLAGS)):
             reasons.append(f"git {sub} -o writes its output to a file")
 
     return reasons
@@ -1701,6 +1678,28 @@ def outside_workspace(segment, roots):
     return found
 
 
+def touches_sandbox(segment):
+    """True if any argument names a path inside the session scratchpad.
+
+    Values fused into a flag count -- `--output=/tmp/.../scratchpad/f` -- which
+    is exactly what outside_workspace above will not look at: it considers only
+    tokens that START with `/` or `~`, so a fused path leaves the guard silent
+    on a write it had just decided to permit. Silence is then betting that
+    Claude Code's path gate does not notice the path either, and that is not a
+    property this guard can check. Where it has made a judgement the allow
+    rules cannot express -- `Bash(sort:*)` permits `sort -o /etc/passwd` just
+    as happily -- it should say so and vouch.
+    """
+    for token in segment:
+        candidates = [token, token.partition("=")[2]]
+        # `-o/tmp/.../scratchpad/f`: a short flag with its value attached.
+        if len(token) > 2 and token[0] == "-" and token[1] != "-":
+            candidates.append(token[2:])
+        if any(candidate and in_sandbox(candidate) for candidate in candidates):
+            return True
+    return False
+
+
 def matches(text, rules):
     for pattern, source in rules:
         if text == pattern or text.startswith(pattern + " "):
@@ -1926,6 +1925,14 @@ def analyze(text, prefix, deny, depth, roots=()):
             return False, False
         if segment[0] in NOOP_BUILTINS:
             continue
+        if segment[0] == "set":
+            if not set_is_noop(segment[1:]):
+                return False, False
+            # Vouched for like control flow: no prefix rule can express a
+            # shell builtin, so leaving this to the rules means `set -o
+            # pipefail` withdraws the grant from everything beside it.
+            needs_grant = True
+            continue
         permitted, was_local = segment_permitted(segment, prefix, deny)
         if not permitted:
             return False, False
@@ -1938,6 +1945,8 @@ def analyze(text, prefix, deny, depth, roots=()):
         # permitted by the rules, and find_reasons runs first, so anything
         # write-capable has already become "ask" before we get here.
         if roots and outside_workspace(segment, roots):
+            needs_grant = True
+        if touches_sandbox(segment):
             needs_grant = True
     return True, needs_grant
 
@@ -2012,784 +2021,33 @@ def guard_disabled():
 # Self-test:  ./bash-write-guard.py --test   (no `python3`: that always asks)
 # ---------------------------------------------------------------------------
 
-# A fixed rule set, so these expectations don't shift when settings.json gains
-# or loses a rule. The point is to pin the guard's own logic, not the config.
-_TEST_RULES = [(pattern, "test") for pattern in (
-    "ls", "cd", "cat", "echo", "printf", "grep", "sed", "find", "sort", "awk",
-    "diff",
-    "head", "tail", "cut", "wc", "uniq", "tee", "paste", "bc", "systemctl",
-    "ssh-add",
-    "[", "test",
-    "git log",
-    "git branch",
-    "git merge-base",
-    "git grep", "git status", "git show", "git diff", "git rev-parse",
-    "git rev-list", "git config", "git remote", "git ls-remote", "stat",
-    "git shortlog", "git archive", "git bundle", "git format-patch",
-)]
+
+_CASES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "bash-write-guard-cases.py")
 
 
-_TEST_ROOTS = ("/workspace",)
+def _load_cases():
+    """The test fixtures, from the sibling file that holds them.
 
-# Built from the running uid rather than written out: SANDBOX_DIR pins the uid,
-# so a literal here would have to carry this machine's, and this file is
-# published. The project and session components are deliberately fictional.
-_SANDBOX = f"/tmp/claude-{os.getuid()}/proj/session/scratchpad"
+    Imported here rather than at module scope, and only under --test: the
+    decision path must never depend on a file that exists solely for testing.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("bash_write_guard_cases",
+                                                  _CASES_FILE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def _verdict(command):
+def _verdict(command, fixtures):
     """What the hook would emit for this command: ask / allow / silent."""
     if find_reasons(command):
         return "ask"
-    permitted, needs_grant = analyze(command, _TEST_RULES, [], 0,
-                                     _TEST_ROOTS)
+    permitted, needs_grant = analyze(command, fixtures.TEST_RULES, [], 0,
+                                     fixtures.TEST_ROOTS)
     return "allow" if permitted and needs_grant else "silent"
 
-
-# "silent" means the hook says nothing and the normal permission flow decides.
-# For anything write-capable or opaque that is a bug -- those must be "ask".
-# For an un-allowlisted command like `rm` it is correct: the rules prompt.
-_CASES = [
-    # -- redirects ---------------------------------------------------------
-    ("ask",    "echo hi > /tmp/f"),
-    ("ask",    "echo hi >> /tmp/f"),
-    ("ask",    "cat a > b"),
-    ("ask",    "grep -n foo f > out"),
-    ("ask",    "echo x > $(printf /tmp/f)"),      # placeholder as the target
-    ("ask",    "echo hi; sed -i s/a/b/ f"),       # write in a later segment
-    ("silent", "echo hi 2>/dev/null"),            # discarded, not written
-    ("silent", "grep -n foo f 2>&1"),             # fd dup, writes nothing
-    ("silent", 'sed -n 1,5p f; echo "2>/dev/null"'),   # quoted, inert
-
-    # -- in-place / write flags on read-only-looking tools -----------------
-    ("ask",    "sed -i s/a/b/ f"),
-    ("ask",    "sed -i.bak s/a/b/ f"),
-    ("ask",    "sed -ni s/a/b/ f"),
-    ("ask",    "sed --in-place s/a/b/ f"),
-    ("ask",    "find . -delete"),
-    ("ask",    "find . -exec rm {} ;"),
-    ("ask",    "sort -o out f"),
-    ("ask",    "sort --output=out f"),
-    ("ask",    "awk '{print > \"/tmp/f\"}' f"),
-    ("ask",    "awk 'BEGIN{system(\"rm x\")}'"),
-    ("ask",    "awk -f prog.awk f"),              # program file we can't read
-    ("ask",    "awk -fprog.awk f"),
-    ("ask",    "git branch -D feature/x"),
-    ("ask",    "git branch -m a b"),
-    # -f RESETS an existing branch to a new start point, discarding where it
-    # pointed. Allowlisted by Bash(git branch:*) and previously unflagged.
-    ("ask",    "git branch -f backup/pre-fix HEAD"),
-    ("ask",    "git branch --force backup/pre-fix HEAD"),
-    ("ask",    "git branch -c old new"),
-    ("silent", "git branch --list"),
-    ("silent", "git branch -a"),
-    ("allow",  'echo "on: $(git branch --show-current)"'),
-    # git subcommands that always write: not allowlisted, but say why
-    ("ask",    "git checkout -q b31304ed6e19"),
-    ("ask",    "git reset --hard HEAD~1"),
-    ("ask",    "git clean -fd"),
-    ("ask",    "git commit -m x"),
-    ("ask",    "git push origin master"),
-    ("ask",    'cd /workspace\ngit checkout -q abc123 && echo "at $(git rev-parse --short HEAD)"'),
-    # ...and the read-only forms of mixed subcommands are left alone
-    ("silent", "git worktree list"),
-    ("silent", "git stash list"),
-    ("ask",    "tee /tmp/f"),
-    ("ask",    "dd if=a of=b"),
-    ("ask",    "truncate -s 0 f"),
-    ("ask",    "shred f"),
-    ("silent", "sed -n 1,5p f"),
-    ("silent", "find . -name '*.c'"),
-    ("silent", "git branch --list"),
-
-    # -- $(...) substitution ----------------------------------------------
-    # A nested double quote inside $(...) used to close the OUTER quote, so
-    # `->` surfaced as a bare `>` and the whole command read as a redirect.
-    ("allow",  'echo "$(grep -c "a->b" f)"'),
-    ("allow",  'printf "%s\\n" "$(grep -c "x<y\\|p->q" f)"'),
-    ("allow",  'for f in a b; do printf "%s %s\\n" "$f" "$(grep -c "s->$f" g)"; done'),
-    ("allow",  'sed -n "1,$(echo 5)p" f'),
-    ("ask",    'echo "$(tee /tmp/f)"'),           # write inside the parens
-    ("ask",    'echo "$(sed -i s/a/b/ f)"'),
-    ("ask",    'echo "$(echo "$(dd of=/tmp/f)")"'),
-    ("ask",    'printf "$(grep -c "a->b" f)" > /tmp/out'),
-    ("silent", "$(echo ls) -la"),                 # substitution as the command
-    # `$(` opens a fresh quoting context. Inside "$( ... )" a single quote is
-    # significant again, so '(none)' is literal text -- carrying the outer `"`
-    # inwards made that `)` close the substitution early and mangled the rest.
-    ("allow",  'echo "$(grep -oE \'x[0-9]+\' f || echo \'(none)\')"'),
-    # Same nesting, but `git log "$s"` now asks on the unreadable argument, so
-    # this pins the quote handling with a subcommand that has no --output.
-    ("allow",  'printf "%s %s" "$(git grep -c x "$s")" "$(git grep -l x "$s" | cut -c1-9)"'),
-    ("ask",    'printf "%s" "$(git log -1 "$s")"'),
-    ("ask",    'echo "$(tee /tmp/f || echo \'(none)\')"'),
-    # ...and a substitution that is only literal text stays inert.
-    ("silent", "echo '$(rm -rf /)'"),
-
-    # -- constructs the guard cannot see through must ASK, never go silent -
-    ("ask",    "echo `tee /tmp/f`"),              # backticks hide the write
-    ("ask",    "cat <(tee /tmp/f)"),
-    ("ask",    'echo "unterminated'),
-    ("ask",    'echo "$(echo "$(echo "$(echo hi)")")"'),   # past depth cap
-    # ...but a backtick or paren that is only literal text stays silent.
-    ("silent", "grep -n '`' f"),
-    ("silent", "echo 'use `cmd` here'"),
-    ("silent", 'grep -c "(" f'),
-
-    # A `)` inside DOUBLE quotes within a substitution is literal text. The
-    # scanner used to close the substitution on it, then read the real `)` as
-    # unbalanced and refuse -- so `git log -S"Bash(uniq:*)"` asked. Single
-    # quotes always worked, which is why this survived so long.
-    ("allow",  'echo "$(grep -c "f(x)" /workspace/a)"'),
-    ("allow",  """echo "$(grep -c 'f(x)' /workspace/a)\""""),
-    ("allow",  'c=$(git log -S"Bash(uniq:*)" -- f | head -1); echo "$c"'),
-    ("allow",  'echo "$(echo "$(echo "x)y")")"'),
-    ("silent", 'echo "a)b"'),                     # literal, no substitution
-    # The fix must not blind the scan to what follows the quoted paren.
-    ("ask",    'echo "$(rm -rf /workspace/x)"'),
-    ("ask",    'echo "$(grep -c "f(x)" /workspace/a; rm -rf /workspace/y)"'),
-    ("ask",    'echo "$(grep -c "f(x /workspace/a)"'),   # truly unbalanced
-    # the sed address is read as an absolute path by the path gate, so the
-    # guard grants to suppress a prompt for what is only a read
-    ("allow",  'sed -n "/a(/,/b)/p" f'),
-    ("silent", "awk '{print $1}' f"),
-
-    # -- control flow ------------------------------------------------------
-    ("allow",  'for f in a b; do echo "$f"; done'),
-    ("allow",  "if git merge-base --is-ancestor a b; then echo y; else echo n; fi"),
-    # shlex treats '#' as a comment anywhere and would discard the rest of the
-    # line -- verifying a command shorter than the one bash actually runs. If
-    # commenters="" is ever dropped this becomes "allow", not merely "silent".
-    ("ask",    "for c in a; do echo hi#; rm -rf /tmp/poc; done"),
-    # An unknown iteration set is opaque, not forbidden: a glob cannot be read,
-    # but the body then judges `$f` as the unknown value it is.
-    ("allow",  'for f in *; do echo "$f"; done'),
-    ("allow",  'for t in conf/*.toml; do cat "$t"; done'),
-    ("ask",    "for f in conf/*; do sed $f x; done"),    # unknown value into sed
-    ("ask",    "for f in -i; do sed $f x; done"),        # visibly a flag: refused
-    # A loop word that is a flag reaches the body as `sed $f`, where every flag
-    # check runs against the token rather than the value. Each of these was
-    # granted as read-only and then wrote to a file. The word is substituted in
-    # now, so the write is positively identified and named: "ask", not silence.
-    ("ask",    "for f in -i; do sed $f 's/a/b/' data.txt; done"),
-    ("ask",    "for f in -o; do sort $f out.txt in.txt; done"),
-    ("ask",    "for f in -D; do git branch $f release-1; done"),
-    ("ask",    "for f in -f; do awk $f prog.awk data.txt; done"),
-    # an argument that BEGINS with an expansion could be anything, including a
-    # write flag -- no loop required. This was live and uncaught.
-    ("ask",    'sed $(echo "-i") s/a/b/ data.txt'),
-    ("ask",    'sed "$(echo -i)" s/a/b/ data.txt'),
-    ("ask",    "sort $(echo -o) out.txt in.txt"),
-    ("ask",    "awk $(echo -f) prog.awk data.txt"),
-    ("ask",    "git branch $(echo -D) release-1"),
-    ("ask",    "for f in $(cat list); do sed $f x; done"),   # was gap 2
-    ("ask",    'sed -n "$SCRIPT" data.txt'),                 # accepted loss
-    # ...but an expansion with a literal in front of it cannot start a flag
-    ("allow",  'sed -n "1,$(echo 5)p" f'),
-    ("allow",  "for f in a.txt b.txt; do sed -n 1,5p $f; done"),
-    ("allow",  'L=/tmp/x.log; sed -n 1,5p "$L"'),
-    ("silent", 'grep -c "$s" f'),                  # grep has no write flag
-    # git log DOES have one. This case asserted the opposite until `git log
-    # --output=FILE` was run and produced a 524-byte file; every diff-machinery
-    # subcommand accepts it. An unreadable "$sha" could be that flag, so the
-    # idiom now costs a prompt -- the alternative is granting the hole.
-    ("ask",    'git log -1 --format=%s "$sha"'),
-    # ...and expansion is exact, so a read-only flag is no longer refused
-    ("allow",  "for f in -n; do sed $f 1,5p data.txt; done"),
-    ("allow",  "for f in -c; do grep $f pattern data.txt; done"),
-    ("allow",  "for f in -i; do grep $f pattern data.txt; done"),
-    # a loop that cannot be expanded, but whose word could be a flag, says so
-    ("ask",    "for f in -i; do for g in a; do sed $f x; done; done"),
-    # not expandable (the word would split), so `$f` survives into the body
-    # and is caught there as an argument the guard cannot see through
-    ("ask",    'for f in "a -i"; do sed $f x; done'),
-    # ...while ordinary literal word lists keep working
-    ("allow",  'for u in https://a.example/ https://b.example/; do echo "$u"; done'),
-    ("allow",  "for c in 0fe44dfb28e2:495458 aedc918bcd:1234; do echo $c; done"),
-    ("allow",  'for s in WRONG_COUNTS BAD_NODE; do git grep -c "$s" HEAD; done'),
-    ("silent", "case $x in a) echo 1;; esac"),
-
-    # -- while / until -------------------------------------------------------
-    # The condition and the body are ordinary commands and every check applies
-    # to each, so these need no word-list vetting the way `for` does. What read
-    # assigns is deliberately never resolved: the body judges `$line` exactly as
-    # it judges a value out of `$(...)`, which is the whole safety property.
-    ("allow",  "while true; do echo x; done"),
-    ("allow",  'while read -r line; do echo "$line"; done'),
-    ("allow",  'cat f | while read -r a b; do printf "%s %s\\n" "$a" "$b"; done'),
-    ("allow",  'cat f | while IFS=: read -r a b; do printf "%s\\n" "$a"; done'),
-    ("allow",  'until [ -e /workspace/f ]; do echo waiting; done'),
-    # a write in the body is caught exactly as it is anywhere else
-    ("ask",    'while read -r a; do rm "$a"; done'),
-    ("ask",    'while read -r a; do cp "$a" /tmp/x; done'),
-    ("ask",    'until [ -e f ]; do touch f; done'),
-    # what was read is opaque, so a flag-sensitive command still refuses it
-    ("ask",    'while read -r a; do sed $a f; done'),
-    ("ask",    'while read -r a; do git log $a; done'),
-    # and an expansion in command position is still not a command we can read
-    ("silent", 'while read -r a; do $a; done'),
-    # IFS is scoped to `read` only -- the forms that change word splitting for
-    # everything after them are still refused
-    ("silent", "IFS=: ls /workspace"),
-    ("silent", "IFS=:; ls /workspace"),
-    ("silent", "IFS=: cat f"),
-    # the keywords are only keywords where a command may start
-    ("silent", "grep -n while f"),
-    ("silent", "grep -n read f"),
-
-    # -- variable assignments ----------------------------------------------
-    # Accepted only when the name cannot steer execution AND the value is a
-    # bare literal -- no whitespace to word-split on, no glob character, no
-    # leading dash. That is what makes an unquoted "$L" equal to the literal.
-    ("allow",  "F=/tmp; ls $F"),
-    ("allow",  'L=/tmp/x.log; tail -2 "$L"'),
-    ("allow",  'L=/tmp/x.log; tail -2 "$L"; grep -c foo "$L"'),
-    ("allow",  "D=/tmp; ls ${D}/sub"),
-    ("allow",  "F=/tmp/a.log grep -c x /tmp/a.log"),      # prefix-form assign
-    # names that decide WHAT runs, or HOW
-    ("silent", "PATH=/evil ls"),
-    ("silent", "GIT_EXTERNAL_DIFF=rm git diff HEAD"),     # would execute rm
-    ("silent", "LD_PRELOAD=/tmp/x.so cat f"),
-    ("silent", "IFS=. ls"),
-    ("silent", "HOME=/tmp ls"),
-    ("ask",    "BASH_ENV=/tmp/x sh -c date"),          # `sh` asks regardless
-    ("silent", "PYTHONPATH=/tmp cat f"),
-    ("silent", "http_proxy=http://x cat f"),              # matched uppercased
-    # Values that are not bare literals are opaque, not forbidden: accepted,
-    # left unsubstituted, and judged as `$L`. Only a value that is VISIBLY a
-    # flag still refuses -- that is a positive identification.
-    ("allow",  'L="a b"; cat $L'),                        # word-splits: harmless
-    ("allow",  "L=*.c; ls $L"),                           # globs: harmless
-    ("ask",    "L=-i; sed $L f"),                         # would become a flag
-    ("ask",    'L="a -i"; sed $L f'),                     # flag in a later piece
-    # `export NAME=value` is judged as the assignment it is. The value outlives
-    # the command, but safe_assignment asks whether the NAME can steer what runs
-    # -- and that answer does not depend on how long the value lives.
-    ("allow",  "export FOO=bar"),                         # sets nothing that runs
-    ("allow",  "export FOO=bar BAZ=qux; grep -c x f"),
-    ("allow",  "export D=/workspace/d; grep -c x $D/f"),  # value still expands
-    ("silent", "export PATH=/evil; ls"),                  # refused as a prefix is
-    ("silent", "export LD_PRELOAD=/tmp/x.so; ls"),
-    ("silent", "export GIT_EXTERNAL_DIFF=rm; git diff"),
-    ("silent", "export IFS=x; ls"),
-    ("ask",    "export FOO=-i; sed $FOO s/a/b/ f"),       # opaque, flag-sensitive
-    ("ask",    "export FOO=bar; rm -rf /tmp/x"),          # the command still runs
-    # shapes this does NOT model, left to REFUSED_WORDS
-    ("silent", "export -p"),                              # a listing
-    ("silent", "export -f fn"),                           # a function
-    ("silent", "export $x"),                              # unknown name
-    ("silent", "export FOO"),                             # re-exports an unseen value
-    ("silent", "grep -n export f"),                       # argument, not a builtin
-    # a value from $(...) is opaque, not forbidden: recorded as the placeholder
-    # so a flag-sensitive command refuses it and everything else is fine
-    ("allow",  'L=$(cat /tmp/p); cat "$L"'),
-    ("ask",    'n=$(cat flags); sed $n f'),
-    ("ask",    'n=$(cat flags); sed "$n" f'),      # quoting is no defence here
-    ("ask",    'n=$(cat flags); sort $n a b'),
-    ("allow",  'n=$(grep -c foo f); printf "%s\n" "$n"'),
-    ("allow",  'n=$(wc -l f); echo "lines: $n"'),
-    # a loop word may contain spaces; the pieces are what must not be flags
-    ("allow",  'for s in "namespace os76" "register_elide"; do grep -c -F "$s" f; done'),
-    ("allow",  'for s in "ftl::for_each" "label::SLOW"; do grep -rIl -F "$s" k t; done'),
-    ("allow",  '''for s in "namespace os76" "a b"; do n=$(grep -c -F "$s" f); printf "%-20s %s\n" "$s" "$n"; done'''),
-    ("silent", "L=; cat $L"),                             # empty
-    # the value is substituted in, so the real command is what gets judged
-    ("ask",    'L=/tmp/x; rm "$L"'),
-    ("ask",    'L=/tmp/x; tee "$L"'),
-    ("silent", "export PATH=x; ls"),
-    ("silent", "eval ls"),
-    # these three were "silent" until command wrappers joined ALWAYS_ASK;
-    # "ask" is the stronger verdict, so the expectation moved, not the code
-    ("ask",    "xargs rm"),
-    ("ask",    "sudo ls"),
-    ("ask",    "env FOO=1 ls"),
-    ("silent", "( echo x )"),
-
-    # -- ALWAYS_ASK: none of these are allowlisted, so they would prompt on
-    # their own. The point is that one of them anywhere in a compound denies
-    # the grant outright, rather than the grant resting on the other commands.
-    ("ask",    "rm -rf /tmp/x"),
-    ("ask",    'for f in a; do rm "$f"; done'),
-    ("ask",    'for f in a b; do echo "$f"; rm "$f"; done'),
-    ("ask",    "ls -la && rm x"),
-    ("ask",    "mv a b"),
-    ("ask",    "cp a b"),
-    ("ask",    "mkdir -p /tmp/x"),
-    ("ask",    "touch f"),
-    ("ask",    "chmod 0755 f"),
-    ("ask",    "ln -s a b"),
-    ("ask",    "tar -xzf x.tar.gz"),
-    # orchestrator asks on EVERY subcommand, reads included -- see the table.
-    # These pin the ways a command word can arrive, since each bypasses a
-    # different check: the bare name, an absolute path (basenamed by argv0_of,
-    # and the only form that works here because ~/.local/bin is not on PATH),
-    # behind a wrapper, inside a substitution, and behind an env prefix.
-    ("ask",    "orchestrator whoami"),
-    ("ask",    "orchestrator submit --branch users/me/x"),
-    ("ask",    "/opt/local/bin/orchestrator whoami"),
-    ("ask",    "timeout 60 orchestrator whoami"),
-    ("ask",    'echo "$(orchestrator whoami)"'),
-    ("ask",    "A=1 orchestrator whoami"),
-    ("ask",    "ls -la && orchestrator whoami"),
-    ("silent", "grep -n orchestrator f"),   # an argument is just an argument
-    # The one exemption: subcommands read out of the client source and shown to
-    # be a GET. "silent" not "allow" because no rule names orchestrator -- a
-    # local grant supplies the permission, and grants are off in these tests.
-    ("silent", "orchestrator request_status 68625"),
-    ("silent", "orchestrator request_status 68625 --show-history"),
-    ("silent", "orchestrator request_status --commits --color 68625"),
-    ("silent", "orchestrator request_status 68625 | tail -3"),
-    ("silent", "orchestrator request_status 68625 2>&1 | tail -3"),
-    # the exemption has to be PROVEN, so anything unreadable withdraws it
-    ("ask",    "orchestrator request_status --newflag 68625"),
-    ("ask",    "orchestrator request_status"),          # no id: unvetted shape
-    ("ask",    "orchestrator request_status $ID"),      # could expand to a flag
-    ("ask",    'orchestrator request_status "$(cat id)"'),
-    ("ask",    "orchestrator request_status --show-history $F"),
-    # every other subcommand still asks, in every position
-    ("ask",    "orchestrator submit"),
-    ("ask",    "orchestrator resubmit 68625"),
-    ("ask",    "orchestrator abort 68625"),
-    ("ask",    "orchestrator pull_request_delete 68625"),
-    ("ask",    "orchestrator queue_reorder"),
-    ("ask",    'echo "$(orchestrator submit)"'),
-    ("ask",    'echo "$(orchestrator abort 68625)"'),
-    ("silent", 'echo "$(orchestrator request_status 68625)"'),
-    ("ask",    "orchestrator request_status 68625 && orchestrator submit"),
-    ("ask",    "orchestrator submit; orchestrator request_status 68625"),
-    ("ask",    "timeout 60 orchestrator submit"),
-    ("ask",    "A=1 orchestrator submit"),
-    ("ask",    "xargs orchestrator submit"),
-    ("ask",    "/opt/local/bin/orchestrator submit"),
-    ("ask",    "patch -p1 < d.patch"),
-    ("ask",    "python3 -c 'print(1)'"),
-    ("ask",    "bash -c 'echo hi'"),
-    # An interpreter always asks, with no exception carved out for our own
-    # tools -- so the diagnostic tools are run directly instead. They keep a
-    # shebang and the executable bit for exactly this reason, and a rule then
-    # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
-    ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
-    ("silent", "~/.claude/tools/why-prompt.py ls"),
-
-    # ssh-add changes agent state by DEFAULT, so listing is named and the rest
-    # asks -- a bare invocation loads the default identities.
-    ("silent", "ssh-add -l"),
-    ("silent", "ssh-add -L"),
-    ("silent", "ssh-add -l -E sha256"),        # -E takes a value
-    ("ask",    "ssh-add"),                     # loads default identities
-    ("ask",    "ssh-add -D"),
-    ("ask",    "ssh-add -d ~/.ssh/id_ed25519"),
-    ("ask",    "ssh-add -x"),
-    ("ask",    "ssh-add ~/.ssh/id_ed25519"),
-    ("ask",    "ssh-add -t 3600"),
-
-    # systemctl reads and changes state under one name, and the write side is
-    # the larger one -- so the READ side is named and everything else asks.
-    # silent, not allow: nothing here needs a grant, so the rule decides.
-    ("silent", "systemctl --user is-active ssh-auth-sock.timer"),
-    ("silent", "systemctl --user list-timers --no-pager"),
-    ("silent", "systemctl -p MainPID show foo"),   # value flag before the sub
-    ("silent", "systemctl"),                       # bare: lists units
-    ("ask",    "systemctl --user restart foo"),
-    ("ask",    "systemctl --user enable --now foo"),
-    ("ask",    "systemctl daemon-reload"),
-    ("ask",    "systemctl --user stop foo"),
-    ("ask",    "systemctl --bogus is-active foo"), # option: cannot attribute
-
-    # paste and bc write nothing: every paste flag goes to stdout, and bc's
-    # language has no file output and no shell escape -- unlike awk, which is
-    # why AWK_LIKE needs a check and these do not. Blockers inside a $(...) do
-    # not show up as segments, so this shape is easy to misread.
-    ("allow",  "echo \"$(cut -d: -f2 f | paste -sd+ | bc)\""),
-
-    # A redirection is not an argument. Any check that counts positionals saw
-    # `2>&1` as two of them, so these ordinary reads reported writes.
-    ("silent", "uniq -c f 2>&1"),
-    ("silent", "git config user.name 2>/dev/null"),
-    ("ask",    "uniq a b"),                      # still counted when real
-    ("ask",    "git config user.name Henry"),
-    ("ask",    "echo hi > f 2>&1"),              # the redirect itself still asks
-
-    # ruff lints (read) and formats/fixes (write) under one command name.
-    ("silent", "ruff check --select E9,F --no-cache f.py"),
-    ("silent", "ruff format --check f.py"),
-    ("silent", "ruff format --diff f.py"),
-    ("ask",    "ruff check --fix f.py"),
-    ("ask",    "ruff check --fix-only f.py"),
-    ("ask",    "ruff format f.py"),
-    ("ask",    "ruff clean"),
-    ("ask",    "ruff check -o report.json f.py"),
-    ("ask",    "ruff --config x.toml format f.py"),   # sub behind a value flag
-    ("ask",    "ruff server"),
-
-    # A session scratchpad is disposable, so a write PROVABLY landing in one is
-    # not worth a prompt. Provably means absolute and literal: a relative path
-    # depends on a cwd an earlier `cd` may have changed, and `$P/f` is not a
-    # path we have read. Deletion is never sandboxed.
-    ("allow",  f"echo hi > {_SANDBOX}/notes.md"),
-    ("allow",  f"uniq {_SANDBOX}/a {_SANDBOX}/b"),
-    ("ask",    "echo hi > /tmp/other.txt"),
-    ("ask",    "echo hi > notes.md"),            # relative: cwd unprovable
-    ("ask",    'echo hi > "$P/notes.md"'),       # variable: not read
-    ("ask",    f"echo hi > {_SANDBOX}/../../../../etc/x"),
-    ("ask",    f"rm -rf {_SANDBOX}/f"),          # deletion still asks
-    # sed -i and tee name their targets in argv, so they are sandboxed too --
-    # all or nothing: one target outside the scratchpad and the whole command
-    # asks, since a partial write is not a partial risk.
-    ("allow",  f"sed -i s/a/b/ {_SANDBOX}/f"),
-    ("allow",  f"echo x | tee {_SANDBOX}/f"),
-    ("allow",  f"echo x | tee -a {_SANDBOX}/f {_SANDBOX}/g"),
-    ("ask",    "sed -i s/a/b/ /etc/passwd"),
-    ("ask",    f"sed -i s/a/b/ /etc/passwd {_SANDBOX}/f"),
-    ("ask",    "sed -i -e s/a/b/ /etc/passwd"),  # script from a flag
-    ("ask",    "sed -i s/a/b/ f.txt"),           # relative: cwd unprovable
-    ("ask",    f"echo x | tee {_SANDBOX}/f /etc/passwd"),
-    ("ask",    f"sed --bogus -i s/a/b/ {_SANDBOX}/f"),   # unknown flag
-    ("ask",    f"echo x | tee --bogus {_SANDBOX}/f"),
-    ("ask",    "echo hi > /tmp/claude-99999999/p/s/scratchpad/f"),  # other uid
-
-    # uniq's SECOND positional is an output file it overwrites, so the tool is
-    # not unconditionally read-only even though it reads like a filter.
-    ("silent", "uniq -c f"),
-    ("silent", "sort f | uniq -c"),
-    ("silent", "uniq -f2 f"),
-    ("silent", "uniq"),
-    ("ask",    "uniq a b"),
-    ("ask",    "uniq -c in.txt out.txt"),
-    ("ask",    "uniq --bogus f"),          # unknown flag: count unprovable
-    ("allow",  'P=/workspace/d; sort "$P/f" | uniq -c | head -3'),
-
-    # git's global options sit BEFORE the subcommand, so `-C dir` was landing
-    # where every git check looked for it. These produced no reason at all.
-    ("ask",    "git -C /tmp/x reset --hard"),
-    ("ask",    "git -C /tmp/x branch -D main"),
-    ("ask",    "git --git-dir=/tmp/x/.git fetch --prune origin"),
-    ("ask",    "git --bogus-opt log"),          # unsizeable option: cannot attribute
-    ("allow",  "git -C /tmp/x rev-parse HEAD"), # same op as `git rev-parse`
-    # A directory INSIDE the workspace is the case that exposed the second half
-    # of this: the normalized match was made and then dropped as "no grant
-    # needed", so the prompt came anyway. The cases above passed regardless,
-    # because a path outside the workspace sets needs_grant by another route.
-    ("allow",  "git -C /workspace/d status --short"),
-    ("allow",  "git -C /workspace/d diff claude/settings.json"),
-    ("allow",  "git -C /workspace/d log --oneline -1"),
-    ("ask",    "git -C /workspace/d push origin master"),   # still a write
-    ("ask",    "git -C /workspace/d remote set-url origin git@x:y.git"),
-    # `continue` and friends are builtins, so no rule can ever name them.
-    ("allow",  'for f in a b; do [ -e "$f" ] || continue; cat "$f"; done'),
-
-    # xargs takes its arguments from stdin but its COMMAND from argv, and it
-    # never re-parses stdin as shell syntax -- so the command can be read, with
-    # the arguments marked unknown.
-    ("allow",  "grep -rl alloy conf/*.toml | head -1 | xargs cat"),
-    ("allow",  "xargs -0 grep -c x"),
-    ("allow",  "xargs -I{} cat {}"),
-    ("ask",    "xargs rm < list"),
-    ("ask",    "xargs -n 1 rm"),                  # value flag consumed, rm found
-    ("ask",    "xargs sed -i s/a/b/"),
-    ("ask",    "xargs sed s/a/b/"),               # stdin could supply -i
-    ("ask",    "xargs --bogus cat"),              # unknown flag: stays wrapped
-    ("ask",    "xargs"),                          # no command to attribute
-    ("ask",    "xargs timeout 5 rm"),
-
-    # `<(cmd)` substitutes a /dev/fd path, so like $(...) its only new risk is
-    # the commands inside. `diff <(a) <(b)` is the whole reason to read it.
-    ("allow",  "diff <(git log -1 aa) <(git log -1 bb) | head -30"),
-    ("allow",  "diff <(sort a) <(sort b)"),
-    ("ask",    "diff <(rm -rf /tmp/x) f"),        # inner write still caught
-    ("ask",    "diff <(git log $A) f"),           # and so is a smuggled flag
-    ("silent", 'echo "<(rm -rf x)"'),             # quoted: literal, never runs
-    ("ask",    "cat > >(tee /tmp/f)"),            # >(...) is fed output: refused
-    ("ask",    "diff `git show a` f"),            # backticks still refused
-
-    # An unreadable value reaching the diff machinery could BE --output, which
-    # turns an allowlisted read into a file write. These were granted outright.
-    ("ask",    'A=$(cat f); git log $A'),
-    ("ask",    'A=$(cat f); git diff $A'),
-    ("ask",    'A=$(cat f); git show $A'),
-    ("ask",    'A=$(cat f); git format-patch $A'),
-    # ...but a `for` word is expanded to its literal first, so it still clears.
-    ("allow",  "for s in aa bb; do git log -1 --format=%h $s; done"),
-
-    # shortlog is not diff machinery but takes the same --output. The literal
-    # flag was always caught; an unreadable value was granted outright.
-    ("silent", "git shortlog -sn HEAD~3..HEAD"),
-    ("ask",    "git shortlog --output=/tmp/x HEAD"),
-    ("ask",    'A=$(cat f); git shortlog $A'),
-    ("ask",    'git shortlog "$(cat f)"'),
-    # `--end-of-options` does NOT rescue shortlog: its own parser ignores the
-    # marker and honours a later --output. Measured, not assumed -- so if the
-    # marker is ever taught to the guard, it must not cover this subcommand.
-    ("ask",    'A=$(cat f); git shortlog --end-of-options $A'),
-
-    # git archive streams to stdout; -o/--output is what makes it a write, and
-    # --exec hands the remote a program to run.
-    ("silent", "git archive --format=tar HEAD"),
-    ("silent", "git archive --list"),
-    ("ask",    "git archive -o /tmp/x.tar HEAD"),
-    ("ask",    "git archive -o/tmp/x.tar HEAD"),      # attached short form
-    ("ask",    "git archive --output=/tmp/x.tar HEAD"),
-    ("ask",    "git archive --remote=origin --exec=/tmp/p HEAD"),
-    ("ask",    'A=$(cat f); git archive $A'),
-
-    # git bundle dispatches on a positional, so the subcommand must be located
-    # before anything can be said -- same shape as git remote.
-    ("silent", "git bundle verify /workspace/x.bundle"),
-    # same read, but the bundle is outside the workspace: the guard vouches for
-    # it rather than leaving it to the path gate.
-    ("allow",  "git bundle list-heads /tmp/x.bundle"),
-    ("ask",    "git bundle create /tmp/x.bundle HEAD"),
-    ("ask",    "git bundle unbundle /tmp/x.bundle"),
-    ("ask",    "git bundle --progress create /tmp/x.bundle HEAD"),
-    ("ask",    "git bundle --version=3 create /tmp/x.bundle HEAD"),  # unsizable
-    ("ask",    'A=$(cat f); git bundle $A /tmp/x.bundle'),
-
-    # format-patch writes a directory of patches under a flag GIT_OUTPUT_FLAG
-    # used to miss, and its -o is the same write spelled short.
-    ("ask",    "git format-patch --output-directory=/tmp/x -1 HEAD"),
-    ("ask",    "git format-patch --output-directory /tmp/x -1 HEAD"),
-    ("ask",    "git format-patch -o /tmp/x -1 HEAD"),
-
-    # Global options that print and exit reach no subcommand, so "cannot
-    # attribute this option to a subcommand" was the wrong complaint.
-    ("silent", "git --version"),
-    ("silent", "git -v"),
-    ("silent", "git --help"),
-    ("silent", "git -h"),
-    ("silent", "git --exec-path"),
-    ("silent", "git --no-pager --version"),
-    ("silent", "git --version status"),          # git ignores the trailing word
-    # ...but `--exec-path=DIR` repoints where git finds its helper programs and
-    # then runs the subcommand, so only the bare spelling is terminal.
-    ("ask",    "git --exec-path=/tmp/evil status"),
-    # Anything unrecognized stops the scan rather than being skipped, so an
-    # option that takes a value can never hide a subcommand behind it.
-    ("ask",    "git -c core.pager=cat --version"),
-    ("ask",    "git --literal-pathspecs --version"),
-
-    # `git fetch` is allowlisted, so the guard is the ONLY thing standing
-    # between a plain fetch and one that moves a local branch.
-    ("silent", "git fetch origin feature/one feature/two"),
-    ("silent", "git fetch --all"),
-    ("silent", "git fetch -q --depth 1 origin main"),
-    ("silent", "git fetch --filter blob:none origin main"),   # value, not refspec
-    ("silent", "git fetch --filter=blob:none origin main"),
-    ("ask",    "git fetch origin master:master"),             # writes LOCAL master
-    ("ask",    "git fetch --prune origin"),
-    ("ask",    "git fetch -p origin"),
-    ("ask",    "git fetch --set-upstream origin"),            # writes config
-    ("ask",    "git fetch --force origin a:b"),
-    ("ask",    "git fetch --refmap=+refs/heads/*:refs/heads/* origin"),
-    ("ask",    "git fetch git@host:repo.git"),                # deliberate over-ask
-    ("ask",    'git fetch origin "$SPEC"'),                   # refspec via expansion
-    ("ask",    "/bin/rm -f x"),                   # matched on the basename
-    ("ask",    'echo "$(rm -f x)"'),              # inside a substitution
-    ("silent", "zstdgrep foo f.zst"),             # not `zstd`; still read-only
-
-    # -- a command straight after do/then/else must still be scanned. It sits
-    # where argv0 belongs, so the keyword used to be read as the command name.
-    ("ask",    'for f in a; do sed -i s/x/y/ "$f"; done'),
-    ("ask",    "for f in a; do tee /tmp/x; done"),
-    ("ask",    "if [ -f x ]; then rm x; fi"),
-    ("ask",    "if [ -f x ]; then echo y; else rm x; fi"),
-    ("ask",    'for f in a; do find . -name "$f" -delete; done'),
-    # A bare `{` is the same trap as `do`: it sits where argv0 belongs, so a
-    # brace group hid every write inside it from the checks below. Only the
-    # rule gate was prompting these -- the guard's own answer said nothing.
-    ("ask",    "{ rm -rf /tmp/x; }"),
-    ("ask",    "{ sed -i s/a/b/ f; }"),
-    ("ask",    "true || { sed -i s/a/b/ f; }"),
-    ("ask",    "{ timeout 5 rm -rf /tmp/x; }"),   # unwrapped inside the group
-    ("ask",    "{ echo a; } > /tmp/f"),           # redirect on the group itself
-    # Grouping adds no capability, so a read-only group is grantable.
-    ("allow",  "grep -c x f || { echo no; tail -2 f; }"),
-    ("allow",  "F=/tmp/out\ngrep -q x \"$F\" 2>/dev/null || { echo no; tail -2 \"$F\"; }"),
-    # Only a BARE brace in command position is a group: brace expansion is one
-    # token, a brace where no command can start means we misread the line, and
-    # a function definition aborts on its parentheses.
-    ("silent", "echo {a,b}"),
-    ("silent", "echo a }"),
-    ("silent", "f() { rm -rf x; }"),
-    # ...but only LEADING keywords are stripped: as an argument it still scans.
-    ("ask",    "find . -name done -delete"),
-    ("silent", "cat done"),
-    ("silent", "grep -n then f"),
-    ("silent", "grep -n for f"),
-    # REFUSED_WORDS is gated on command position, like bash's own reserved
-    # words: as a plain argument the word is just an argument.
-    ("silent", "grep -n while f"),
-    ("silent", "ls eval"),
-    ("silent", "echo export PATH=x"),
-    ("allow",  'echo "$(grep -c eval f)"'),
-    # `.` is the source builtin only in command position; as an argument it is
-    # the current directory, and checking it everywhere refused these outright.
-    ("allow",  'echo "fs: $(stat -f -c %T .)"'),
-    ("ask",    "find . -name x $(echo -delete)"),
-    ("ask",    "for f in -delete; do find . -name x $f; done"),
-
-    # -- command wrappers hide the real argv0 from every write check ---------
-    # Safe today only because none are allowlisted; allowlisting `timeout`
-    # would have let `timeout 30 rm -rf x` through with no prompt at all,
-    # because nothing about it needs a grant.
-    ("ask",    "timeout 30 rm -rf /tmp/x"),
-    ("ask",    "nice rm -rf /tmp/x"),
-    ("ask",    "stdbuf -o0 rm -rf /tmp/x"),
-    ("ask",    "setsid rm -rf /tmp/x"),
-    ("ask",    "flock /tmp/l rm -rf /tmp/x"),
-    ("ask",    "watch rm -rf /tmp/x"),
-    ("ask",    "env rm -rf /tmp/x"),
-    ("ask",    "sudo rm -rf /tmp/x"),
-    # `timeout [OPTION] DURATION COMMAND` parses, so the wrapper is removed and
-    # the real command is judged. curl is simply not allowlisted -> the rules
-    # decide, which is a prompt, but no longer timeout's doing.
-    ("silent", "timeout 30 curl -s -o /dev/null https://example.invalid"),
-    ("silent", 'for u in a b; do timeout 5 curl -s "$u"; done'),
-    ("ask",    "timeout 40 rm -rf /tmp/x"),               # caught as rm
-    ("ask",    "timeout 40 sed -i s/a/b/ f"),             # caught as sed -i
-    ("ask",    "timeout -k 5 40 rm -rf /tmp/x"),          # flags consumed
-    ("ask",    "timeout --signal=KILL 40 tee /tmp/f"),
-    ("allow",  "timeout 40 grep -c x f"),                 # read-only, granted
-    ("allow",  "timeout 5 wc -l f"),
-    ("allow",  "timeout 1.5s grep -c x f"),
-    ("allow",  "timeout --foreground 40 grep -c x f"),
-    ("allow",  'for f in a b; do timeout 5 grep -c x "$f"; done'),
-    # a prefix that will not parse keeps the wrapper, and ALWAYS_ASK catches it
-    ("ask",    "timeout --bogus 40 grep -c x f"),         # unknown flag arity
-    ("ask",    "timeout notaduration grep -c x f"),       # duration check fails
-    ("ask",    "timeout 40 $CMD -c x f"),                 # unknown command
-    # `--` ends the options, and per `timeout [OPTION] DURATION COMMAND` it
-    # must precede DURATION -- after it, `--` would BE the command name.
-    ("allow",  "timeout -- 5 grep -c x f"),
-    ("ask",    "timeout -- 5 rm -rf /tmp/x"),
-    ("ask",    "timeout 5 -- grep -c x f"),   # invalid for timeout; not unwrapped
-    # wrappers nest: the command position is re-examined after each removal
-    ("allow",  "timeout 5 timeout 3 grep -c x f"),
-    ("ask",    "timeout 5 timeout 3 rm -rf /tmp/x"),
-    # an environment prefix does not end the command position, so the wrapper
-    # behind it is still unwrapped. Getting this wrong made `VAR=x timeout N cmd`
-    # ask for the wrapper's sake and silently voided a grant on cmd.
-    ("allow",  "A=1 timeout 5 grep -c x f"),
-    ("allow",  "A=1 B=2 timeout 5 grep -c x f"),
-    ("ask",    "A=1 timeout 5 rm -rf /tmp/x"),   # the real command still caught
-    ("ask",    "A=1 timeout 5 sed -i s/a/b/ f"),
-    ("silent", "PATH=/evil timeout 5 grep -c x f"),  # unsafe name still refused
-    # only in command position: an argument that looks like one is an argument
-    ("silent", "grep -n A=1 f"),
-    # the other wrappers stay opaque on purpose
-    ("ask",    "nice 40 grep -c x f"),
-    ("ask",    "stdbuf -o0 grep -c x f"),
-    # the wrapper name as an argument is still just an argument
-    ("silent", "grep -n timeout f"),
-    ("silent", "git log --oneline --grep=timeout"),
-
-    # -- allowlisted git subcommands are not unconditionally read-only -----
-    ("ask",    "git diff --output=/tmp/d HEAD~1"),
-    ("ask",    "git log --output /tmp/l"),
-    ("silent", "git diff --stat HEAD~1"),
-    ("silent", "git log --oneline -3"),
-
-    # -- git config: reads are fine, and one write form has no flag at all ---
-    ("silent", "git config --get user.email"),
-    ("silent", "git config user.email"),               # one arg reads
-    ("silent", "git config --list"),
-    ("silent", "git config get user.email"),           # newer read subcommand
-    ("silent", "git config --file cfg --get user.email"),
-    ("silent", "stat -f -c %T ."),
-    ("allow",  'echo "$(git config --get user.email)"'),
-    ("allow",  'echo "fs: $(stat -f -c %T .)"'),
-    ("ask",    "git config user.email a@b.c"),         # two args SETS
-    ("ask",    "git config --file cfg user.email a@b.c"),
-    ("ask",    "git config --add user.email a@b.c"),
-    ("ask",    "git config --unset user.email"),
-    ("ask",    "git config --unset-all user.email"),
-    ("ask",    "git config --replace-all core.editor vim"),
-    ("ask",    "git config --remove-section alias"),
-    ("ask",    "git config --rename-section old new"),
-    ("ask",    "git config --edit"),
-    ("ask",    "git config set user.email a@b.c"),     # newer write subcommand
-    ("ask",    "git config unset user.email"),
-    ("ask",    "git config --bogus user.email"),       # arity unknown -> unprovable
-    # `git remote`: the write is chosen by a positional, not a flag
-    ("silent", "git remote"),
-    ("silent", "git remote -v"),
-    ("silent", "git remote show origin"),
-    ("silent", "git remote get-url origin"),
-    ("allow",  'echo "$(git remote -v)"'),
-    ("ask",    "git remote add origin git@example.com:x/y.git"),
-    ("ask",    "git remote set-url origin git@example.com:z/w.git"),
-    ("ask",    "git remote remove origin"),
-    ("ask",    "git remote rename origin upstream"),
-    ("ask",    "git remote set-head origin -a"),
-    ("ask",    "git remote set-branches origin master"),
-    ("ask",    "git remote prune origin"),
-    ("ask",    "git remote update"),
-    ("ask",    "git remote -v add origin git@example.com:x/y.git"),
-    ("ask",    "git remote --bogus show origin"),      # cannot locate the subcommand
-    ("ask",    "git remote $SUB origin"),              # could expand to set-url
-    # `git ls-remote` is a ref lookup, except for the two flags that talk to the
-    # far end about something other than refs. "silent" here means the guard
-    # steps aside and Bash(git ls-remote:*) permits it -- no prompt; only the
-    # substitution needs an actual grant, since no prefix rule can match one.
-    ("silent", "git ls-remote origin"),
-    ("silent", "git ls-remote origin refs/heads/main"),
-    ("silent", "git ls-remote --branches --tags --refs origin"),
-    ("silent", "git ls-remote --sort=version:refname --symref origin"),
-    ("silent", "git ls-remote --get-url origin"),
-    ("allow",  'echo "$(git ls-remote origin)"'),
-    ("ask",    "git ls-remote --upload-pack=/tmp/x origin"),
-    ("ask",    "git ls-remote --upload-pack /tmp/x origin"),
-    ("ask",    "git ls-remote -o key=value origin"),
-    ("ask",    "git ls-remote --server-option=key=value origin"),
-    ("ask",    "git ls-remote $FLAGS origin"),          # could be --upload-pack
-    # an argument beginning with an expansion could be --unset, and unquoted it
-    # would even word-split into `--unset user.email`
-    ("ask",    "git config $(echo --unset) user.email"),
-    ("ask",    'git config --get "$(echo --unset)"'),
-
-    # -- plain commands: the rules decide, the hook keeps quiet ------------
-    ("silent", "ls -la"),
-    ("silent", "grep -n foo f | head -3"),
-    ("silent", "cat f | wc -l"),
-
-    # -- out-of-workspace reads --------------------------------------------
-    # Reads outside the workspace are wanted; the path gate prompts for them.
-    # Granting suppresses that, and adds no write risk: the command already
-    # matches an allow rule, and anything write-capable became "ask" earlier.
-    ("allow",  "ls -d /etc"),
-    ("allow",  "cd /workspace\nsed -n '/GatewayError.*Corrupt/,/^}/p' f | head -10"),
-    ("allow",  'grep -c foo /etc/hosts'),
-    ("ask",    "rm -rf /etc/x"),               # write anywhere still asks
-    ("ask",    "tee /etc/x"),
-    ("silent", "curl -s /etc/hosts"),          # not allowlisted -> rules decide
-
-    # -- newlines separate commands -----------------------------------------
-    # shlex treats a newline as whitespace under whitespace_split, so two
-    # commands on two lines collapsed into one whose argv0 was the FIRST one.
-    # The second became an argument, the segment matched the first command's
-    # rule, and a substitution anywhere made the whole thing grantable.
-    ("ask",    'echo "$(echo hi)"\nrm -rf /tmp/x'),
-    ("ask",    "ls\nrm -rf /tmp/x"),
-    ("ask",    'echo "$(echo hi)"\nsed -i s/a/b/ f'),
-    ("ask",    "grep -n x f\ntee /tmp/out"),
-    ("allow",  'cd /tmp\nF=/tmp/x.log\necho "=== size ==="; wc -l $F'),
-    ("silent", "ls -la\nls -l sub/dir"),      # in-workspace: nothing to say
-    ("allow",  "ls -la\nls -l /tmp"),         # /tmp is outside -> grant
-    # a newline inside quotes is data, and a backslash-newline joins lines
-    ("silent", 'echo "line1\nline2"'),
-    ("silent", "grep -c 'a\nb' f"),
-    ("allow",  'F=/tmp/x.log\nwc -l \\\n  "$F"'),
-]
-
-# Known gaps, asserted at their CURRENT behavior so they are written down
-# rather than rediscovered. Each is a shape where a write-capable flag reaches
-# an allowlisted tool through data the guard cannot read. Closing one makes the
-# assertion below fail -- that is the reminder to move it into _CASES.
-_GAPS = [
-    # Empty. Both original entries were closed by expanding literal loop words
-    # and by treating an argument that begins with an expansion as opaque.
-    # Keep the list and its handling: the next gap wants writing down, not
-    # rediscovering.
-]
 
 
 def _raise_for_test():
@@ -2824,7 +2082,45 @@ def _fail_closed_ok():
         sys.argv = saved_argv
 
 
+def _missing_tables_ok():
+    """Does an unloadable tables file still produce "ask"?
+
+    Its own check because the first attempt at this got it wrong: _decide()
+    raised on `T is None`, but a module-scope `T.AWK_LIKE` dereferenced the
+    tables during import, long before _decide could run. That exits non-zero
+    with no stdout -- fail-OPEN. Anything that reads T at module scope
+    reintroduces exactly that, and only this notices.
+    """
+    import contextlib
+    import io
+
+    saved_tables, saved_argv = T, sys.argv
+    try:
+        globals()["T"] = None
+        sys.argv = ["bash-write-guard.py"]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main()
+        emitted = json.loads(buf.getvalue() or "{}")
+        decision = emitted.get("hookSpecificOutput", {}).get("permissionDecision")
+        return decision == "ask", decision
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        globals()["T"] = saved_tables
+        sys.argv = saved_argv
+
+
 def _selftest():
+    if T is None:
+        print(f"cannot load {_TABLES_FILE}: {TABLES_ERROR}")
+        return 2
+    try:
+        fixtures = _load_cases()
+    except Exception as exc:
+        print(f"cannot load {_CASES_FILE}: {type(exc).__name__}: {exc}")
+        return 2
+
     # Pin the generic logic only: a local_grants.py, if present, would make
     # results depend on a file that is deliberately not portable.
     global LOCAL_GRANT
@@ -2873,12 +2169,13 @@ def _selftest():
                 f"shell string, or changes identity. See the WRAPPERS comment.")
 
     fail_closed, fail_closed_got = _fail_closed_ok()
+    tables_closed, tables_got = _missing_tables_ok()
 
     failed = []
-    for group, cases in (("case", _CASES), ("gap", _GAPS)):
+    for group, cases in (("case", fixtures.CASES), ("gap", fixtures.GAPS)):
         for expected, command in cases:
             try:
-                got = _verdict(command)
+                got = _verdict(command, fixtures)
             except Exception as exc:                  # a crash is a failure
                 got = f"raised {type(exc).__name__}: {exc}"
             if got != expected:
@@ -2888,8 +2185,9 @@ def _selftest():
         label = "GAP CLOSED?" if group == "gap" else "FAIL"
         print(f"{label}  expected {expected}, got {got}\n          {command}")
 
-    total = len(_CASES) + len(_GAPS)
-    print(f"\n{total} cases ({len(_CASES)} behaviour, {len(_GAPS)} known gaps), "
+    total = len(fixtures.CASES) + len(fixtures.GAPS)
+    print(f"\n{total} cases ({len(fixtures.CASES)} behaviour, "
+          f"{len(fixtures.GAPS)} known gaps), "
           f"{len(failed)} unexpected")
     for problem in wrapper_errors:
         print(f"WRAPPERS  {problem}")
@@ -2897,6 +2195,10 @@ def _selftest():
         print(f"FAIL-OPEN  a crash in the decision path emitted "
               f"{fail_closed_got!r}, not 'ask'. The allow rules would then "
               f"decide alone, and they permit `sed -i` under Bash(sed:*).")
+    if not tables_closed:
+        print(f"FAIL-OPEN  an unloadable tables file emitted {tables_got!r}, "
+              f"not 'ask'. Something reads T at module scope, so the import "
+              f"dies before _decide() can turn it into a prompt.")
 
     if local_error:
         print(f"local_grants.py FAILS TO RUN -- every local grant is silently "
@@ -2904,7 +2206,7 @@ def _selftest():
     elif had_local:
         print("note: local_grants.py loads and runs; disabled for the cases above")
     return 1 if failed or local_error or wrapper_errors \
-        or not fail_closed else 0
+        or not fail_closed or not tables_closed else 0
 
 
 def emit(decision, reason):
@@ -2937,6 +2239,13 @@ def main():
 
 
 def _decide():
+    # Raised HERE, not at import: main()'s handler turns this into "ask", where
+    # an uncaught import error would have exited silently and left the allow
+    # rules to decide alone. Before guard_disabled() on purpose -- a guard that
+    # cannot read its own tables should not be quietly switched off either.
+    if T is None:
+        raise RuntimeError(f"cannot load {_TABLES_FILE}: {TABLES_ERROR}")
+
     if guard_disabled():
         return 0
 

@@ -33,6 +33,8 @@ REPO = os.path.dirname(os.path.abspath(__file__))
 FILES = [
     "bash_env.sh",
     "hooks/bash-write-guard.py",
+    "hooks/bash-write-guard-cases.py",
+    "hooks/bash-write-guard-tables.py",
     "hooks/unguarded-worktrees",
     "tools/why-prompt.py",
     "tools/guard-verdict.py",

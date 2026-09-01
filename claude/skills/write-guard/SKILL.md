@@ -10,7 +10,9 @@ guard checks — that lives in the code, where it cannot drift:
 
 | Question | Read |
 |---|---|
-| What does it check, and why this flag? | `~/.claude/hooks/bash-write-guard.py` — the tables carry their own rationale |
+| What does it check, and why this flag? | `~/.claude/hooks/bash-write-guard-tables.py` — per-tool knowledge, each table beside its rationale |
+| How does it decide? | `~/.claude/hooks/bash-write-guard.py` — parsing, the checks, the harness |
+| What is it pinned against? | `~/.claude/hooks/bash-write-guard-cases.py` — `TEST_RULES`, `CASES`, `GAPS`; data only |
 | What are the two jobs? | its module docstring |
 | Why did *this* command prompt? | `~/.claude/tools/why-prompt.py '<the exact command>'` |
 | How does a prompt get decided at all? | `claude/README.md` in the dotfiles repo (not installed into `~/.claude`) |
@@ -103,11 +105,57 @@ error, leaving the rules to decide alone. `_decide()` plus the top-level `except
 prevents that, and `_fail_closed_ok()` proves it. Do not add an early `return`/`sys.exit` path
 around it.
 
+## Pattern: move the substitution inside an alias
+
+The commonest avoidable prompt is a read-only command that needs a value only another command
+can supply:
+
+```sh
+git diff <sha> "$(git <lookup> <id> <ref>)" -- <path>
+```
+
+Everything here reads, and it still prompts, for two reasons that compound. A `$(...)` matches
+no prefix rule, so the line needs a guard grant to run at all. And the flag-sensitive check
+then refuses: `git diff` accepts `--output`, the substitution's value is not readable, so it
+could BE `--output=/tmp/x`. An `ask` beats every rule and every grant, so the grant it needed
+is the one thing it cannot get.
+
+There is no fix inside the guard. Proving the value safe means running the inner command, and
+a hook that decides whether programs may run must not run one.
+
+**Fix the command instead: push the lookup into a git alias.** The alias does the substitution
+internally, so from the shell it is one segment whose arguments are all literal:
+
+```sh
+git <alias> <id> <ref>
+```
+
+Nothing is opaque, nothing can arrive as a flag, and the grant becomes provable. Grant it by
+name in `local_grants.py` — never as a `Bash(git <alias>:*)` rule, because a prefix rule cannot
+express the argument restrictions below.
+
+An alias, specifically, rather than a shell function or a script on `PATH`: git resolves it, so
+the line stays a single `git ...` segment with no new command name for the rules to cover, and
+every definition is auditable in one place with `git config --get-regexp '^alias\.'`.
+
+Before granting one:
+
+- **Read every definition you are granting.** A `!`-prefixed alias runs an arbitrary shell
+  command, and the name tells you nothing about it. Record the date you read them.
+- **Refuse any argument that starts with `-` or `$`, or holds a substitution placeholder.** The
+  alias may pass its arguments through to a flag-sensitive git command, which puts you back
+  where you started, only now behind a grant.
+- **Grant readers only.** Anything that pushes, resets, or takes a ref it will write stays out,
+  however convenient. A read-only sibling in the same list does not vouch for it.
+- **Do not re-read the definitions from the hook.** Shelling out to `git config` to compare
+  against a pinned copy was tried and rejected: a hook that decides whether programs may run
+  should not itself run one. Trust the vetted list, and re-vet when it changes.
+
 ## Definition of done
 
 1. `~/.claude/hooks/bash-write-guard.py --test` — all cases, 0 unexpected.
 2. **Every fix earns a case.** Add the command that was mishandled, not a paraphrase of it.
-3. A gap you cannot close goes in `_GAPS`, asserted at its *current* behaviour, so closing it
+3. A gap you cannot close goes in `GAPS`, asserted at its *current* behaviour, so closing it
    later fails the suite as a reminder. Never leave a known hole undocumented.
 4. Verify through the real interface, not just the unit under test: feed the hook a JSON
    `tool_input` on stdin and read the verdict. Several fixes looked right in isolation and did
@@ -121,7 +169,14 @@ around it.
 
 ## Traps
 
-**The test fixture is not the real rule set.** `_TEST_RULES` is a small stand-in. A case
+**Never read `T` at module scope.** The tool tables are a sibling module, loaded into `T` inside
+a `try`; `_decide()` raises if it is `None` and the fail-closed handler turns that into `ask`.
+A module-scope `T.SOMETHING` dereferences the tables *during import*, before `_decide()` can
+run — the process then dies with a traceback, exit non-zero and no stdout, which `PreToolUse`
+treats as non-blocking. That is fail-**open**. A derived table belongs beside what it derives
+from, in the tables file. `_missing_tables_ok()` is the only thing that catches this.
+
+**The test fixture is not the real rule set.** `TEST_RULES` is a small stand-in. A case
 prompting there may only mean the fixture lacks the rule — this produced three wrong diagnoses
 in a row. Check `settings.json` before concluding the guard is at fault.
 
