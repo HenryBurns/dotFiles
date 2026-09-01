@@ -13,10 +13,10 @@ Reuses bash-write-guard.py for the write detection so there is one source of
 truth rather than two copies that drift.
 """
 
+import datetime
 import importlib.util
 import json
 import os
-import shlex
 import sys
 
 HOME = os.path.expanduser("~")
@@ -87,6 +87,73 @@ def staleness_warning(cwd):
                 f"started.\n  Rules added since then are NOT live. Restart to "
                 f"apply them.")
     return None
+
+
+def newest_settings_mtime(cwd):
+    """When the rules last changed, across every settings file that feeds them."""
+    times = []
+    for _, path in settings_sources(cwd):
+        try:
+            times.append(os.path.getmtime(path))
+        except OSError:
+            continue
+    return max(times) if times else None
+
+
+def sessions_that_ran(command, cwd):
+    """Report which transcripts contain this command, and how stale they are.
+
+    Exists because "every segment matches, and it prompted anyway" has one
+    overwhelmingly common cause that this tool otherwise cannot see: the
+    command ran in a DIFFERENT Claude session, one started before the rule it
+    needed was added. Claude Code reads settings.json once at startup, so a
+    long-lived session keeps prompting for rules that exist on disk. One
+    session found this way had been running 26 days.
+
+    The command is matched as the JSON-escaped string the transcript stores, so
+    quoting and newlines survive the comparison.
+
+    THIS session is skipped: staleness_warning() already speaks for it, from
+    the running process's own start time, which is the accurate figure. A
+    transcript's first timestamp is not -- a resumed session carries the old
+    conversation's date while running a freshly started process -- so what is
+    reported for other sessions is "began before the change and was active
+    after it", which is a strong hint and not a proof.
+    """
+    projects = os.path.join(HOME, ".claude", "projects")
+    needle = json.dumps(command.strip())[1:-1]
+    if len(needle) < 12:
+        return []                      # too short to identify anything
+    settings_at = newest_settings_mtime(cwd)
+    current = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+
+    found = []
+    for root, _, files in os.walk(projects):
+        for name in files:
+            if not name.endswith(".jsonl") or name[:-6] == current:
+                continue
+            path = os.path.join(root, name)
+            try:
+                with open(path, errors="replace") as handle:
+                    if not any(needle in line for line in handle):
+                        continue
+                    handle.seek(0)
+                    started = json.loads(handle.readline()).get("timestamp")
+            except (OSError, ValueError):
+                continue
+            stale = (settings_at is not None
+                     and os.path.getmtime(path) > settings_at > _epoch(started))
+            found.append((name[:8], started, stale))
+    return sorted(found, key=lambda row: row[1] or "")
+
+
+def _epoch(timestamp):
+    """ISO-8601 timestamp to epoch seconds, or 0 if it cannot be read."""
+    try:
+        return datetime.datetime.fromisoformat(
+            timestamp.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return 0
 
 
 def settings_sources(cwd):
@@ -249,6 +316,24 @@ def main():
     else:
         print("VERDICT: no prompt expected (if the running session has this "
               "config loaded)")
+        # Only asked here: when the rules and the guard both clear a command
+        # that prompted anyway, the session that ran it is the remaining
+        # explanation. Skipped when something already blocks, where it would be
+        # noise.
+        ran_in = sessions_that_ran(command, cwd)
+        stale = [row for row in ran_in if row[2]]
+        if stale:
+            print("\n  This command also ran in ANOTHER session, whose "
+                  "transcript begins before\n  the rules last changed and "
+                  "which was active after:")
+            for session, started, _ in stale:
+                print(f"    {session}  transcript begins {started}")
+            print("  Claude Code reads settings.json once at startup. Unless "
+                  "that session has\n  been restarted since, it is still using "
+                  "the rules as they were then --\n  which is the usual reason "
+                  "a command clears here and prompts there.")
+        elif ran_in:
+            print("\n  ran in: " + ", ".join(f"{s} ({t})" for s, t, _ in ran_in))
     return 0
 
 
