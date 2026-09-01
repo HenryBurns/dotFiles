@@ -68,11 +68,16 @@
       "Bash(mountpoint:*)",
       "Bash(git config:*)",
       "Bash(git remote:*)",
+      "Bash(git ls-remote:*)",
       "Bash(~/.claude/tools/why-prompt.py:*)",
       "Bash(~/.claude/tools/guard-verdict.py:*)",
+      "Bash(~/.claude/tools/check-settings.py:*)",
       "Bash(~/.claude/hooks/bash-write-guard.py:*)",
       "Bash(git --version:*)",
-      "Bash(git version:*)"
+      "Bash(git version:*)",
+      "Bash(git --help:*)",
+      "Bash(git -v:*)",
+      "Bash(git -h:*)"
     ]
   },
   "worktree": {

@@ -36,6 +36,7 @@ FILES = [
     "hooks/unguarded-worktrees",
     "tools/why-prompt.py",
     "tools/guard-verdict.py",
+    "tools/check-settings.py",
     # The only portable skill. The rest of ~/.claude/skills is workplace
     # tooling, so skills are published one path at a time, never as a tree.
     "skills/write-guard/SKILL.md",

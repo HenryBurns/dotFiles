@@ -116,7 +116,12 @@ GIT_DIFF_MACHINERY = {
     "log", "show", "diff", "format-patch", "range-diff", "whatchanged",
     "diff-tree", "diff-index", "diff-files",
 }
-GIT_FLAG_SENSITIVE = {"branch", "config", "fetch", "remote"} | GIT_DIFF_MACHINERY
+# shortlog is NOT diff machinery -- it has its own option parser -- but it takes
+# the same --output, so an expansion in its arguments carries the same risk.
+# Kept out of the set above so that name stays true to what it names.
+GIT_FLAG_SENSITIVE = ({"branch", "config", "fetch", "remote", "ls-remote",
+                       "shortlog", "archive", "bundle"}
+                      | GIT_DIFF_MACHINERY)
 
 # `git remote` reads in its bare, `show` and `get-url` forms and writes in all
 # the rest. Unlike git config, the write is selected by a POSITIONAL rather than
@@ -129,6 +134,19 @@ GIT_REMOTE_WRITE_SUBCOMMANDS = {
     "prune", "update",
 }
 GIT_REMOTE_BOOL_FLAGS = {"-v", "--verbose"}
+
+# `git ls-remote` lists refs on a remote and writes nothing on this machine, so
+# it is allowlisted rather than sitting in GIT_WRITE_SUBCOMMANDS. Two of its
+# flags are not a lookup: --upload-pack names a program for the REMOTE to run,
+# and --server-option hands the server an opaque instruction to act on. Neither
+# can touch this machine, and a server is free to refuse both -- but they stop
+# the command being the plain ref lookup the allow rule implies, and "the other
+# end decides" is not a property this guard can verify.
+#
+# Enumerated rather than defaulting unknown flags to "write": nothing here
+# counts positionals, so an unrecognized flag cannot throw the parse off. Same
+# reasoning as GIT_FETCH_WRITE_FLAGS.
+GIT_LS_REMOTE_ASK_FLAGS = {"--upload-pack", "-o", "--server-option"}
 
 # `git fetch` usually only advances remote-tracking refs, so it is allowlisted
 # rather than sitting in GIT_WRITE_SUBCOMMANDS. Two things make it write
@@ -158,7 +176,32 @@ GIT_FETCH_VALUE_FLAGS = {
 
 # The diff machinery behind log/show/diff/format-patch can write its output to
 # a file, so an allowlisted `git diff` is not unconditionally read-only.
-GIT_OUTPUT_FLAG = re.compile(r"^--output(=|$)")
+# --output-directory is format-patch's spelling and writes a whole directory of
+# patches. Anchored exactly rather than as a --output prefix because git does
+# NOT accept abbreviated long options -- `--out=`, `--outp=` and `--outpu=` are
+# all rejected outright (measured), so there is no shorter spelling to catch.
+GIT_OUTPUT_FLAG = re.compile(r"^--output(-directory)?(=|$)")
+
+# `-o` is the same write in two subcommands -- `git archive -o f.tar` and
+# `git format-patch -o dir/` -- but it is NOT a write everywhere: it is
+# --server-option for ls-remote and push, and the remote's name for clone. So
+# this is scoped by subcommand rather than folded into GIT_OUTPUT_FLAG. The
+# attached form `-of.tar` is a single token to parse-options, hence the prefix
+# test rather than equality.
+GIT_SHORT_OUTPUT_SUBCOMMANDS = {"archive", "format-patch"}
+
+# `git archive` streams to stdout and is a read -- until -o/--output names a
+# file. --exec names the program git runs on the REMOTE end, which is the same
+# "the other end decides" that GIT_LS_REMOTE_ASK_FLAGS refuses to vouch for.
+GIT_ARCHIVE_ASK_FLAGS = {"--exec"}
+
+# `git bundle` dispatches on a positional like `git remote` does. create writes
+# a bundle file named by the next positional -- no flag involved, so nothing
+# else in this hook would catch it -- and unbundle writes objects and refs into
+# the repository. verify and list-heads only read.
+GIT_BUNDLE_WRITE_SUBCOMMANDS = {"create", "unbundle"}
+GIT_BUNDLE_READ_SUBCOMMANDS = {"verify", "list-heads"}
+GIT_BUNDLE_BOOL_FLAGS = {"-q", "--quiet", "--progress"}
 
 # Commands that write, delete, or change metadata whatever flags they are given.
 # None of these are allowlisted, so they already prompt; naming them here is
@@ -255,23 +298,37 @@ ALWAYS_ASK = {
 # ---------------------------------------------------------------------------
 
 # Keywords that introduce a command position after them.
-CONTROL_KEYWORDS = {"do", "then", "elif", "else", "if", "fi", "done"}
+# `while cmd; do body; done` needs nothing beyond separating the words: the
+# condition and the body are ordinary commands, and every existing check applies
+# to each. Unlike `for` there is no word list to vet, so this is the SIMPLER
+# loop -- it was refused out of caution, not difficulty. Running a read-only
+# body a million times is still read-only, and a body that writes is caught the
+# same way it is anywhere else.
+CONTROL_KEYWORDS = {"do", "then", "elif", "else", "if", "fi", "done",
+                    "while", "until"}
 
 # Builtins that only steer control flow or return a status. They touch nothing,
 # take no path, and have no write form -- but they are builtins, so no `Bash(..)`
 # rule can ever match them and `|| continue` silenced the guard on an otherwise
 # read-only loop. Cleared without a rule for the same reason `for` is handled:
 # there is no command for a rule to name.
-NOOP_BUILTINS = {"continue", "break", "true", "false", ":"}
+#
+# `read` belongs here for a subtler reason: it writes no file, and the names it
+# assigns are never resolved, so `$line` in the body stays opaque and is judged
+# exactly like a value out of `$(...)`. A flag-sensitive command refuses it, an
+# expansion in command position aborts, and everything else treats it as data.
+# Treating what was read as unknown IS the safety property -- there is nothing
+# to add beyond declining to resolve it.
+NOOP_BUILTINS = {"continue", "break", "true", "false", ":", "read"}
 
 # Anything here means we refuse to reason about the command at all. Either it
 # rewrites the execution environment (eval, export), or it is a construct
-# outside the recognized subset (while, case), or it hides a command position.
+# outside the recognized subset (case, select), or it hides a command position.
 REFUSED_WORDS = {
     "eval", "exec", "source", ".", "trap", "alias", "unalias", "command",
-    "while", "until", "case", "esac", "select", "function", "coproc",
+    "case", "esac", "select", "function", "coproc",
     "export", "declare", "typeset", "local", "set", "unset", "shift",
-    "read", "mapfile", "readarray", "xargs", "env", "nohup", "sudo", "time",
+    "mapfile", "readarray", "xargs", "env", "nohup", "sudo", "time",
 }
 
 # Commands where a single flag flips read into write, so an argument the guard
@@ -358,6 +415,21 @@ def exported_assignments(tokens, index, total):
         found[name] = value
         index += 1
     return found, index
+
+
+def prefixes_read(tokens, index):
+    """True if the assignment at `index` is a prefix to the `read` builtin.
+
+    `IFS=: read -r a b` scopes IFS to that one command, where all it can do is
+    change how read splits the line it was handed -- and read's results are
+    opaque either way, so the value cannot make anything more dangerous. A bare
+    `IFS=:; cmd` is a different thing entirely: it changes word splitting for
+    every command after it, which is why IFS is refused in general. The two are
+    told apart only by what follows, hence this lookahead.
+    """
+    while index < len(tokens) and ASSIGNMENT.match(tokens[index]):
+        index += 1
+    return index < len(tokens) and tokens[index] == "read"
 
 
 def readable_assignment(name, value):
@@ -830,6 +902,36 @@ def git_subcommand_index(rest):
     return index if index < len(rest) else None
 
 
+# Global options that make git print something and exit without ever reaching
+# a subcommand, so "cannot attribute this option to a subcommand" is the wrong
+# complaint: there is no subcommand to attribute it to.
+GIT_TERMINAL_OPTIONS = {
+    "-v", "--version", "-h", "--help",
+    "--exec-path", "--html-path", "--man-path", "--info-path",
+}
+# Only these may precede one, and only in their bare form.
+GIT_PAGER_OPTIONS = {"-p", "--paginate", "-P", "--no-pager"}
+
+
+def git_prints_and_exits(rest):
+    """True if these global options make git print and exit.
+
+    Scanned left to right because git acts on the first option it recognizes.
+    The BARE spellings only: `--exec-path=DIR` is not terminal -- it repoints
+    where git finds its helper programs and then runs the subcommand anyway
+    (`git --exec-path=/tmp/nope version` printed the version). Anything this
+    does not recognize stops the scan rather than being skipped over, so an
+    option that could take a value can never hide a subcommand behind it.
+    """
+    for token in rest:
+        if token in GIT_TERMINAL_OPTIONS:
+            return True
+        if token in GIT_PAGER_OPTIONS:
+            continue
+        return False
+    return False
+
+
 def git_fetch_writes(args):
     """Why `git fetch <args>` writes more than tracking refs, or "" if it does not."""
     positional_only, index = False, 0
@@ -857,6 +959,52 @@ def git_fetch_writes(args):
     return ""
 
 
+# orchestrator is in ALWAYS_ASK because its subcommands are not separable into
+# readers and writers from argv alone -- submit, abort, resubmit, queue_reorder
+# and pull_request_delete all sit in the same namespace. The exception is a
+# subcommand whose implementation has been READ and shown to be a GET: the
+# reason for the blanket rule is uncertainty, so removing the uncertainty for
+# one subcommand is the honest thing to do, not a weakening of it.
+#
+# request_status: pull_request_status() does one http_session.get and log.info;
+# job_status has no HTTP write verb, no open(), no subprocess. Its whole
+# surface is one positional id plus five store_true flags, listed here so a
+# sixth appearing in a later version refuses instead of riding along.
+ORCHESTRATOR_READ_SUBCOMMANDS = {"request_status"}
+ORCHESTRATOR_READ_FLAGS = {"--show-history", "--commits", "--color",
+                           "--orig-commits", "--sort-by-name"}
+
+
+def orchestrator_reads(args):
+    """True if `orchestrator <args>` is a subcommand proven to only read."""
+    if not args or args[0] not in ORCHESTRATOR_READ_SUBCOMMANDS:
+        return False
+    saw_id = False
+    for arg in args[1:]:
+        # An argument the guard cannot read could BE one of the flags it has
+        # not vetted, so the exemption cannot be proven and is not given.
+        if arg.startswith("$") or SUBST_PLACEHOLDER in arg:
+            return False
+        if arg.startswith("-"):
+            if arg not in ORCHESTRATOR_READ_FLAGS:
+                return False
+            continue
+        saw_id = True   # the request id: it only steers what is read
+    # No id at all is not the shape that was vetted -- argparse would reject it
+    # anyway, and guessing at an unrecognized shape is what this avoids.
+    return saw_id
+
+
+def git_ls_remote_writes(args):
+    """Reason `git ls-remote <args>` is more than a ref lookup, or None."""
+    for arg in args:
+        base = arg.split("=", 1)[0]
+        if base in GIT_LS_REMOTE_ASK_FLAGS:
+            return (f"git ls-remote {base} hands the remote a program to run "
+                    f"or an option to act on")
+    return None
+
+
 def git_remote_writes(args):
     """Reason `git remote <args>` changes a remote, or None if it only reads."""
     for arg in args:
@@ -868,6 +1016,30 @@ def git_remote_writes(args):
             return ("git remote is passed an option the guard cannot size, so "
                     "its subcommand cannot be located")
     return None  # no subcommand at all: `git remote` / `git remote -v`
+
+
+def git_archive_writes(args):
+    """Reason `git archive <args>` is more than a stream to stdout, or None."""
+    for arg in args:
+        if arg.split("=", 1)[0] in GIT_ARCHIVE_ASK_FLAGS:
+            return "git archive --exec names a program for the remote to run"
+    return None
+
+
+def git_bundle_writes(args):
+    """Reason `git bundle <args>` writes, or None if it only reads."""
+    for arg in args:
+        if not arg.startswith("-"):
+            if arg in GIT_BUNDLE_READ_SUBCOMMANDS:
+                return None
+            # create and unbundle both write; so does anything we do not
+            # recognize, since a subcommand we cannot name we cannot vouch for.
+            return f"git bundle {arg} writes a bundle file or repository objects"
+        if arg not in GIT_BUNDLE_BOOL_FLAGS:
+            return ("git bundle is passed an option the guard cannot size, so "
+                    "its subcommand cannot be located")
+    # No subcommand at all: `git bundle` alone is a usage error, not a write.
+    return None
 
 
 def git_config_writes(args):
@@ -921,7 +1093,10 @@ def segment_reasons(segment):
     # of a write than a redirect into the same directory.
     tee_to_scratch = (name == "tee"
                       and sandboxed_targets(tee_targets(rest) or []))
-    if name in ALWAYS_ASK and not tee_to_scratch:
+    # Same exemption shape as tee: orchestrator asks on everything except the
+    # subcommands read out of its own source and proven to be reads.
+    orchestrator_read = (name == "orchestrator" and orchestrator_reads(rest))
+    if name in ALWAYS_ASK and not tee_to_scratch and not orchestrator_read:
         reasons.append(f"{name} {ALWAYS_ASK[name]}")
 
     if name == "sed" and any(SED_INPLACE.match(t) for t in rest):
@@ -977,7 +1152,7 @@ def segment_reasons(segment):
                            f"guard cannot see, which could be a write flag")
 
     if name == "git":
-        if rest and sub_at is None:
+        if rest and sub_at is None and not git_prints_and_exits(rest):
             # An option we cannot size, so the subcommand cannot be located and
             # none of the checks below can be trusted to have run.
             reasons.append("git is passed an option the guard cannot attribute "
@@ -993,14 +1168,30 @@ def segment_reasons(segment):
             why = git_fetch_writes(sub_args)
             if why:
                 reasons.append(why)
+        if sub == "ls-remote":
+            why = git_ls_remote_writes(sub_args)
+            if why:
+                reasons.append(why)
         if sub == "remote":
             why = git_remote_writes(sub_args)
             if why:
                 reasons.append(why)
         if sub == "config" and git_config_writes(sub_args):
             reasons.append("git config writes configuration")
+        if sub == "archive":
+            why = git_archive_writes(sub_args)
+            if why:
+                reasons.append(why)
+        if sub == "bundle":
+            why = git_bundle_writes(sub_args)
+            if why:
+                reasons.append(why)
         if any(GIT_OUTPUT_FLAG.match(token) for token in rest):
             reasons.append("git --output writes its output to a file")
+        if sub in GIT_SHORT_OUTPUT_SUBCOMMANDS and any(
+                token.startswith("-o") and not token.startswith("--")
+                for token in sub_args):
+            reasons.append(f"git {sub} -o writes its output to a file")
 
     return reasons
 
@@ -1416,7 +1607,9 @@ def executable_commands(tokens):
             assigned = ASSIGNMENT.match(token)
             if assigned:
                 name, value = assigned.group(1), assigned.group(2)
-                if not safe_assignment(name, value):
+                if (not safe_assignment(name, value)
+                        and not (name == "IFS"
+                                 and prefixes_read(tokens, index))):
                     return None, False
                 assignments[name] = value
                 saw_assignment = True
@@ -1665,7 +1858,13 @@ def substitution_spans(text):
             quote = None
             index += 2
             continue
-        if char == ")" and depth:
+        # `quote is None` matters: a `)` inside double quotes is literal text,
+        # not the end of the substitution. The single-quote branch above
+        # `continue`s so it never reaches here, but the double-quote branch
+        # falls through for ordinary characters -- so without this test,
+        # `$(git log -S"Bash(uniq:*)")` closes at the quoted paren, and the
+        # real `)` then reads as unbalanced and refuses the whole command.
+        if char == ")" and depth and quote is None:
             depth -= 1
             quote = quote_stack.pop()
             if depth == 0:
@@ -1825,7 +2024,8 @@ _TEST_RULES = [(pattern, "test") for pattern in (
     "git branch",
     "git merge-base",
     "git grep", "git status", "git show", "git diff", "git rev-parse",
-    "git rev-list", "git config", "git remote", "stat",
+    "git rev-list", "git config", "git remote", "git ls-remote", "stat",
+    "git shortlog", "git archive", "git bundle", "git format-patch",
 )]
 
 
@@ -1935,6 +2135,20 @@ _CASES = [
     ("silent", "grep -n '`' f"),
     ("silent", "echo 'use `cmd` here'"),
     ("silent", 'grep -c "(" f'),
+
+    # A `)` inside DOUBLE quotes within a substitution is literal text. The
+    # scanner used to close the substitution on it, then read the real `)` as
+    # unbalanced and refuse -- so `git log -S"Bash(uniq:*)"` asked. Single
+    # quotes always worked, which is why this survived so long.
+    ("allow",  'echo "$(grep -c "f(x)" /workspace/a)"'),
+    ("allow",  """echo "$(grep -c 'f(x)' /workspace/a)\""""),
+    ("allow",  'c=$(git log -S"Bash(uniq:*)" -- f | head -1); echo "$c"'),
+    ("allow",  'echo "$(echo "$(echo "x)y")")"'),
+    ("silent", 'echo "a)b"'),                     # literal, no substitution
+    # The fix must not blind the scan to what follows the quoted paren.
+    ("ask",    'echo "$(rm -rf /workspace/x)"'),
+    ("ask",    'echo "$(grep -c "f(x)" /workspace/a; rm -rf /workspace/y)"'),
+    ("ask",    'echo "$(grep -c "f(x /workspace/a)"'),   # truly unbalanced
     # the sed address is read as an absolute path by the path gate, so the
     # guard grants to suppress a prompt for what is only a read
     ("allow",  'sed -n "/a(/,/b)/p" f'),
@@ -1993,8 +2207,35 @@ _CASES = [
     ("allow",  'for u in https://a.example/ https://b.example/; do echo "$u"; done'),
     ("allow",  "for c in 0fe44dfb28e2:495458 aedc918bcd:1234; do echo $c; done"),
     ("allow",  'for s in WRONG_COUNTS BAD_NODE; do git grep -c "$s" HEAD; done'),
-    ("silent", "while true; do echo x; done"),
     ("silent", "case $x in a) echo 1;; esac"),
+
+    # -- while / until -------------------------------------------------------
+    # The condition and the body are ordinary commands and every check applies
+    # to each, so these need no word-list vetting the way `for` does. What read
+    # assigns is deliberately never resolved: the body judges `$line` exactly as
+    # it judges a value out of `$(...)`, which is the whole safety property.
+    ("allow",  "while true; do echo x; done"),
+    ("allow",  'while read -r line; do echo "$line"; done'),
+    ("allow",  'cat f | while read -r a b; do printf "%s %s\\n" "$a" "$b"; done'),
+    ("allow",  'cat f | while IFS=: read -r a b; do printf "%s\\n" "$a"; done'),
+    ("allow",  'until [ -e /workspace/f ]; do echo waiting; done'),
+    # a write in the body is caught exactly as it is anywhere else
+    ("ask",    'while read -r a; do rm "$a"; done'),
+    ("ask",    'while read -r a; do cp "$a" /tmp/x; done'),
+    ("ask",    'until [ -e f ]; do touch f; done'),
+    # what was read is opaque, so a flag-sensitive command still refuses it
+    ("ask",    'while read -r a; do sed $a f; done'),
+    ("ask",    'while read -r a; do git log $a; done'),
+    # and an expansion in command position is still not a command we can read
+    ("silent", 'while read -r a; do $a; done'),
+    # IFS is scoped to `read` only -- the forms that change word splitting for
+    # everything after them are still refused
+    ("silent", "IFS=: ls /workspace"),
+    ("silent", "IFS=:; ls /workspace"),
+    ("silent", "IFS=: cat f"),
+    # the keywords are only keywords where a command may start
+    ("silent", "grep -n while f"),
+    ("silent", "grep -n read f"),
 
     # -- variable assignments ----------------------------------------------
     # Accepted only when the name cannot steer execution AND the value is a
@@ -2091,6 +2332,35 @@ _CASES = [
     ("ask",    "A=1 orchestrator whoami"),
     ("ask",    "ls -la && orchestrator whoami"),
     ("silent", "grep -n orchestrator f"),   # an argument is just an argument
+    # The one exemption: subcommands read out of the client source and shown to
+    # be a GET. "silent" not "allow" because no rule names orchestrator -- a
+    # local grant supplies the permission, and grants are off in these tests.
+    ("silent", "orchestrator request_status 68625"),
+    ("silent", "orchestrator request_status 68625 --show-history"),
+    ("silent", "orchestrator request_status --commits --color 68625"),
+    ("silent", "orchestrator request_status 68625 | tail -3"),
+    ("silent", "orchestrator request_status 68625 2>&1 | tail -3"),
+    # the exemption has to be PROVEN, so anything unreadable withdraws it
+    ("ask",    "orchestrator request_status --newflag 68625"),
+    ("ask",    "orchestrator request_status"),          # no id: unvetted shape
+    ("ask",    "orchestrator request_status $ID"),      # could expand to a flag
+    ("ask",    'orchestrator request_status "$(cat id)"'),
+    ("ask",    "orchestrator request_status --show-history $F"),
+    # every other subcommand still asks, in every position
+    ("ask",    "orchestrator submit"),
+    ("ask",    "orchestrator resubmit 68625"),
+    ("ask",    "orchestrator abort 68625"),
+    ("ask",    "orchestrator pull_request_delete 68625"),
+    ("ask",    "orchestrator queue_reorder"),
+    ("ask",    'echo "$(orchestrator submit)"'),
+    ("ask",    'echo "$(orchestrator abort 68625)"'),
+    ("silent", 'echo "$(orchestrator request_status 68625)"'),
+    ("ask",    "orchestrator request_status 68625 && orchestrator submit"),
+    ("ask",    "orchestrator submit; orchestrator request_status 68625"),
+    ("ask",    "timeout 60 orchestrator submit"),
+    ("ask",    "A=1 orchestrator submit"),
+    ("ask",    "xargs orchestrator submit"),
+    ("ask",    "/opt/local/bin/orchestrator submit"),
     ("ask",    "patch -p1 < d.patch"),
     ("ask",    "python3 -c 'print(1)'"),
     ("ask",    "bash -c 'echo hi'"),
@@ -2240,6 +2510,62 @@ _CASES = [
     ("ask",    'A=$(cat f); git format-patch $A'),
     # ...but a `for` word is expanded to its literal first, so it still clears.
     ("allow",  "for s in aa bb; do git log -1 --format=%h $s; done"),
+
+    # shortlog is not diff machinery but takes the same --output. The literal
+    # flag was always caught; an unreadable value was granted outright.
+    ("silent", "git shortlog -sn HEAD~3..HEAD"),
+    ("ask",    "git shortlog --output=/tmp/x HEAD"),
+    ("ask",    'A=$(cat f); git shortlog $A'),
+    ("ask",    'git shortlog "$(cat f)"'),
+    # `--end-of-options` does NOT rescue shortlog: its own parser ignores the
+    # marker and honours a later --output. Measured, not assumed -- so if the
+    # marker is ever taught to the guard, it must not cover this subcommand.
+    ("ask",    'A=$(cat f); git shortlog --end-of-options $A'),
+
+    # git archive streams to stdout; -o/--output is what makes it a write, and
+    # --exec hands the remote a program to run.
+    ("silent", "git archive --format=tar HEAD"),
+    ("silent", "git archive --list"),
+    ("ask",    "git archive -o /tmp/x.tar HEAD"),
+    ("ask",    "git archive -o/tmp/x.tar HEAD"),      # attached short form
+    ("ask",    "git archive --output=/tmp/x.tar HEAD"),
+    ("ask",    "git archive --remote=origin --exec=/tmp/p HEAD"),
+    ("ask",    'A=$(cat f); git archive $A'),
+
+    # git bundle dispatches on a positional, so the subcommand must be located
+    # before anything can be said -- same shape as git remote.
+    ("silent", "git bundle verify /workspace/x.bundle"),
+    # same read, but the bundle is outside the workspace: the guard vouches for
+    # it rather than leaving it to the path gate.
+    ("allow",  "git bundle list-heads /tmp/x.bundle"),
+    ("ask",    "git bundle create /tmp/x.bundle HEAD"),
+    ("ask",    "git bundle unbundle /tmp/x.bundle"),
+    ("ask",    "git bundle --progress create /tmp/x.bundle HEAD"),
+    ("ask",    "git bundle --version=3 create /tmp/x.bundle HEAD"),  # unsizable
+    ("ask",    'A=$(cat f); git bundle $A /tmp/x.bundle'),
+
+    # format-patch writes a directory of patches under a flag GIT_OUTPUT_FLAG
+    # used to miss, and its -o is the same write spelled short.
+    ("ask",    "git format-patch --output-directory=/tmp/x -1 HEAD"),
+    ("ask",    "git format-patch --output-directory /tmp/x -1 HEAD"),
+    ("ask",    "git format-patch -o /tmp/x -1 HEAD"),
+
+    # Global options that print and exit reach no subcommand, so "cannot
+    # attribute this option to a subcommand" was the wrong complaint.
+    ("silent", "git --version"),
+    ("silent", "git -v"),
+    ("silent", "git --help"),
+    ("silent", "git -h"),
+    ("silent", "git --exec-path"),
+    ("silent", "git --no-pager --version"),
+    ("silent", "git --version status"),          # git ignores the trailing word
+    # ...but `--exec-path=DIR` repoints where git finds its helper programs and
+    # then runs the subcommand, so only the bare spelling is terminal.
+    ("ask",    "git --exec-path=/tmp/evil status"),
+    # Anything unrecognized stops the scan rather than being skipped, so an
+    # option that takes a value can never hide a subcommand behind it.
+    ("ask",    "git -c core.pager=cat --version"),
+    ("ask",    "git --literal-pathspecs --version"),
 
     # `git fetch` is allowlisted, so the guard is the ONLY thing standing
     # between a plain fetch and one that moves a local branch.
@@ -2400,6 +2726,21 @@ _CASES = [
     ("ask",    "git remote -v add origin git@example.com:x/y.git"),
     ("ask",    "git remote --bogus show origin"),      # cannot locate the subcommand
     ("ask",    "git remote $SUB origin"),              # could expand to set-url
+    # `git ls-remote` is a ref lookup, except for the two flags that talk to the
+    # far end about something other than refs. "silent" here means the guard
+    # steps aside and Bash(git ls-remote:*) permits it -- no prompt; only the
+    # substitution needs an actual grant, since no prefix rule can match one.
+    ("silent", "git ls-remote origin"),
+    ("silent", "git ls-remote origin refs/heads/main"),
+    ("silent", "git ls-remote --branches --tags --refs origin"),
+    ("silent", "git ls-remote --sort=version:refname --symref origin"),
+    ("silent", "git ls-remote --get-url origin"),
+    ("allow",  'echo "$(git ls-remote origin)"'),
+    ("ask",    "git ls-remote --upload-pack=/tmp/x origin"),
+    ("ask",    "git ls-remote --upload-pack /tmp/x origin"),
+    ("ask",    "git ls-remote -o key=value origin"),
+    ("ask",    "git ls-remote --server-option=key=value origin"),
+    ("ask",    "git ls-remote $FLAGS origin"),          # could be --upload-pack
     # an argument beginning with an expansion could be --unset, and unquoted it
     # would even word-split into `--unset user.email`
     ("ask",    "git config $(echo --unset) user.email"),
