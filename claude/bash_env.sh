@@ -11,9 +11,16 @@
 #   * Anything a command genuinely needs goes in settings.json's `env` block,
 #     which is applied at exec and does arrive -- that is how SSH_AUTH_SOCK is
 #     set, and it is why BASH_ENV itself is visible at all.
-#   * PATH cannot be fixed anywhere: the Bash tool sources a generated shell
-#     snapshot whose LAST line is an unconditional `export PATH=...`, which
-#     clobbers any earlier value. Call ~/.local/bin tools by absolute path.
+#   * PATH is fixable ONLY from that same `env` block. The Bash tool sources a
+#     generated snapshot whose LAST line is an unconditional `export PATH=...`,
+#     so nothing set here survives -- but the snapshot GENERATOR is itself
+#     spawned with settings' `env`, so a PATH set there is what it captures and
+#     what that last line writes. The generator sources no rc file, so .bashrc
+#     and .bash_profile can never reach it.
+#
+#     That key is a full override -- literal, no `$PATH` expansion -- and only
+#     takes effect on restart. `code` is absent because the VSCode remote-cli
+#     dir is version-pinned and would rot.
 #
 # What remains useful here is the nested-shell case.
 #

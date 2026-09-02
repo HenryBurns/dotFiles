@@ -233,15 +233,46 @@ def set_is_noop(args):
         expect_option_name = letters.endswith("o")
     return bool(args)
 
+
+def command_is_lookup(args):
+    """True if `command <args>` resolves a name instead of running it.
+
+    `command -v foo` prints how the shell would resolve `foo` and executes
+    nothing at all, which makes it the builtin spelling of `which`. Every other
+    form runs its argument -- that is what the builtin is FOR -- so `command`
+    stays in ALWAYS_ASK and this is its one exemption, the same shape as
+    `set -o pipefail` and `git --help`.
+
+    Returns True at the first cluster carrying -v or -V, so `command -v -- foo`
+    is a lookup while `command -- foo` executes. Anything that is not one of
+    the three recognized flags ends the search: a positional word is the
+    command about to run, and an unknown flag is a form to stay quiet about.
+    A bare `command`, or one carrying only -p, resolves nothing and so is not
+    a lookup either.
+    """
+    for arg in args:
+        if len(arg) < 2 or arg[0] != "-":
+            return False           # `foo`, `-`, `--`: a command position
+        letters = arg[1:]
+        if not all(letter in T.COMMAND_FLAG_LETTERS for letter in letters):
+            return False
+        if any(letter in T.COMMAND_LOOKUP_LETTERS for letter in letters):
+            return True
+    return False
+
 # Anything here means we refuse to reason about the command at all. Either it
 # rewrites the execution environment (eval, export), or it is a construct
 # outside the recognized subset (case, select), or it hides a command position.
 REFUSED_WORDS = {
-    "eval", "exec", "source", ".", "trap", "alias", "unalias", "command",
+    "eval", "exec", "source", ".", "trap", "alias", "unalias",
     "case", "esac", "select", "function", "coproc",
     "export", "declare", "typeset", "local", "unset", "shift",
     "mapfile", "readarray", "xargs", "env", "nohup", "sudo", "time",
 }
+# `command` hides a command position too, but is deliberately NOT listed: a
+# refusal here bails out of expand(), so analyze() never sees the segment and
+# could not tell `command -v ruff` from `command rm -rf x`. It is judged in
+# both places instead, and ALWAYS_ASK still catches the executing forms.
 
 # T.FLAG_SENSITIVE (sed/sort/find/awk) is defined with the tool tables: it is
 # built from T.AWK_LIKE, and evaluating that here would touch the tables before
@@ -1069,7 +1100,11 @@ def segment_reasons(segment):
     # Same exemption shape as tee: orchestrator asks on everything except the
     # subcommands read out of its own source and proven to be reads.
     orchestrator_read = (name == "orchestrator" and orchestrator_reads(rest))
-    if name in ALWAYS_ASK and not tee_to_scratch and not orchestrator_read:
+    # And again: `command` asks because it runs its argument, except in the
+    # -v/-V forms, which run nothing.
+    command_lookup = (name == "command" and command_is_lookup(rest))
+    if (name in ALWAYS_ASK and not tee_to_scratch and not orchestrator_read
+            and not command_lookup):
         reasons.append(f"{name} {ALWAYS_ASK[name]}")
 
     if name == "sed" and any(T.SED_INPLACE.match(t) for t in rest):
@@ -1083,6 +1118,16 @@ def segment_reasons(segment):
         why = ruff_writes(rest)
         if why:
             reasons.append(why)
+
+    # `file` identifies types and writes nothing -- except -C, which compiles
+    # the magic file it was given into a .mgc beside it. Clusterable, so `-bC`
+    # counts too.
+    if name == "file" and any(
+            token in T.FILE_COMPILE_FLAGS
+            or (token.startswith("-") and not token.startswith("--")
+                and "C" in token[1:])
+            for token in rest):
+        reasons.append("file -C writes a compiled magic file")
 
     if name == "ssh-add":
         why = ssh_add_writes(rest)
@@ -1224,8 +1269,32 @@ def _parse_loop(tokens, index):
 
 
 def _expandable_word(word):
-    """A loop word we can substitute verbatim: literal, and not a $(...)."""
-    return SUBST_PLACEHOLDER not in word and bool(SAFE_VALUE.match(word))
+    """A loop word we can substitute into the body: literal, and not a $(...).
+
+    A word carrying whitespace qualifies as long as every piece is itself
+    literal. An unquoted `$f` word-splits, so each piece reaches the body as
+    its own argument and the body can still be judged exactly.
+    """
+    if SUBST_PLACEHOLDER in word:
+        return False
+    pieces = word.split()
+    return bool(pieces) and all(SAFE_VALUE.match(piece) for piece in pieces)
+
+
+def _substitute_loop_word(token, name, word):
+    """Substitute one loop word into one body token, as bash would UNQUOTED.
+
+    Returns a LIST because a multi-word value splits: `for f in "a.txt --color"`
+    reaches the body as two arguments, and the second is a flag the tool must be
+    judged against. Quoting cannot be consulted -- tokenize() dropped it long
+    ago -- so `"$f"` is modelled as `$f`. That is the safe direction to be wrong
+    in: splitting can only expose an extra flag, never conceal one.
+
+    A single-word value keeps the old single-token path, so a quoted body token
+    like `"== $f"` is left whole where nothing is gained by breaking it up.
+    """
+    substituted = _substitute_var(token, name, word)
+    return substituted.split() if len(word.split()) > 1 else [substituted]
 
 
 def expand_loops(tokens):
@@ -1255,8 +1324,8 @@ def expand_loops(tokens):
                     for word in words:
                         if out and out[-1] != ";":
                             out.append(";")
-                        out.extend(_substitute_var(tok, name, word)
-                                   for tok in body)
+                        for tok in body:
+                            out.extend(_substitute_loop_word(tok, name, word))
                     out.append(";")
                     index, expect_command, changed = after, True, True
                     continue
@@ -1933,6 +2002,11 @@ def analyze(text, prefix, deny, depth, roots=()):
             # pipefail` withdraws the grant from everything beside it.
             needs_grant = True
             continue
+        # Unlike `set`, a prefix rule CAN express this one -- `Bash(command
+        # -v:*)` -- so the form is verified here and the rules still decide
+        # whether it is allowed.
+        if segment[0] == "command" and not command_is_lookup(segment[1:]):
+            return False, False
         permitted, was_local = segment_permitted(segment, prefix, deny)
         if not permitted:
             return False, False

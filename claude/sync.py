@@ -39,6 +39,7 @@ FILES = [
     "tools/why-prompt.py",
     "tools/guard-verdict.py",
     "tools/check-settings.py",
+    "tools/transcript_cost.py",
     # The only portable skill. The rest of ~/.claude/skills is workplace
     # tooling, so skills are published one path at a time, never as a tree.
     "skills/write-guard/SKILL.md",
@@ -50,6 +51,8 @@ SKIP = {
     "hooks/allowed-blueprints": "internal test-blueprint names",
     "CLAUDE.md": "workplace build, branch and release conventions",
     "tools/share-perms.sh": "bundles the two files above",
+    "tools/subcommand-tools.local": "internal tool names; transcript_cost.py "
+                                    "reads it and works without it",
     "skills/ (except write-guard)": "workplace build, test, ticket and review "
                                     "conventions",
     ".credentials.json": "OAuth credentials -- never leaves the machine",
@@ -127,11 +130,15 @@ def scrub_settings(settings):
         out["env"] = {}
         for key, value in env.items():
             if isinstance(value, str):
+                # Every occurrence, not just a leading one, and every spelling
+                # rather than the first that hits: PATH is a colon-joined LIST,
+                # so home appears mid-value and repeatedly. Rewriting only the
+                # prefix let the rest of a PATH through to the leak scanner.
+                original = value
                 for home in homes:
-                    if value.startswith(home):
-                        value = "__HOME__" + value[len(home):]
-                        dropped.append(f"env.{key} (absolute path -> __HOME__)")
-                        break
+                    value = value.replace(home, "__HOME__")
+                if value != original:
+                    dropped.append(f"env.{key} (absolute path -> __HOME__)")
             out["env"][key] = value
 
     return out, dropped

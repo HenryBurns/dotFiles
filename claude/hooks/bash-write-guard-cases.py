@@ -24,7 +24,8 @@ TEST_RULES = [(pattern, "test") for pattern in (
     "git grep", "git status", "git show", "git diff", "git rev-parse",
     "git rev-list", "git config", "git remote", "git ls-remote", "stat",
     "git shortlog", "git archive", "git bundle", "git format-patch",
-    "ruff",
+    "ruff", "realpath", "basename", "dirname", "file", "readlink",
+    "command -v", "command -V",
 )]
 
 
@@ -188,9 +189,23 @@ CASES = [
     ("allow",  "for f in -i; do grep $f pattern data.txt; done"),
     # a loop that cannot be expanded, but whose word could be a flag, says so
     ("ask",    "for f in -i; do for g in a; do sed $f x; done; done"),
-    # not expandable (the word would split), so `$f` survives into the body
-    # and is caught there as an argument the guard cannot see through
-    ("ask",    'for f in "a -i"; do sed $f x; done'),
+    # A word that splits is expandable too, and expansion is what puts the
+    # piece in front of the command it actually reaches -- which decides it
+    # either way, where refusing the loop outright was only a guess.
+    ("ask",    'for f in "a -i"; do sed $f x; done'),          # -> sed a -i x
+    ("allow",  'for f in "data.txt --color"; do grep -i x $f; done'),
+    ("allow",  'for f in "a.txt HEAD" "b.txt --color"; do echo "== $f"; grep -i x $f; done'),
+    ("ask",    'for f in "data.txt -i"; do sed $f s/a/b/; done'),
+    # The quotes are gone by the time the guard sees this, so a quoted "$f" is
+    # modelled as though it had been unquoted: `sed "x -i" y` really passes one
+    # argument and reads, and this asks. It asked before loop words could split
+    # too -- an opaque `$f` in front of sed already means "could be -i" -- so
+    # modelling the split costs no prompt that was not there anyway. Pinned
+    # because a quoting-aware expansion could legitimately relax it, and should
+    # have to change this line deliberately rather than by accident.
+    ("ask",    'for f in "x -i"; do sed "$f" y; done'),
+    # a piece may even be the command, which the shell word-splits just the same
+    ("allow",  'for c in "grep -c"; do $c pattern data.txt; done'),
     # ...while ordinary literal word lists keep working
     ("allow",  'for u in https://a.example/ https://b.example/; do echo "$u"; done'),
     ("allow",  "for c in 0fe44dfb28e2:495458 aedc918bcd:1234; do echo $c; done"),
@@ -311,6 +326,23 @@ CASES = [
     ("silent", "set --; echo hi"),
     # An option name or letter that was not vetted refuses rather than guessing.
     ("silent", "set -o badoption; echo hi"),
+
+    # `command -v` resolves a name and runs nothing -- `which` as a builtin. It
+    # was in REFUSED_WORDS *and* ALWAYS_ASK, so a `command -v ruff` beside six
+    # allowlisted segments made the whole line ask.
+    ("silent", "command -v ruff"),                 # rule-matched, nothing to add
+    ("silent", 'echo "PATH=$PATH"; command -v ruff; ruff --version'),
+    ("silent", "command -V ruff"),
+    ("silent", "command -pv ruff"),                # clustered with -p
+    ("allow",  "command -v ruff; echo $(ruff --version)"),   # grant survives it
+    # Every other form runs its argument, which is what the builtin is for.
+    ("ask",    "command rm -rf x"),
+    ("ask",    "command -p rm -rf x"),
+    ("ask",    "command -- rm -rf x"),             # -- ends the flags, no -v
+    ("ask",    "command ls"),                      # allowlisted, still hidden
+    ("ask",    "command -x ruff"),                 # unrecognized flag
+    ("ask",    "command"),                         # resolves nothing
+    ("ask",    "command -v ruff > /tmp/f"),        # the redirect still counts
     ("silent", "set -eZ; echo hi"),
     ("silent", "set -oe pipefail; echo hi"),       # `o` must end the cluster
 
@@ -485,6 +517,23 @@ CASES = [
     ("ask",    f"ruff check --fix {SANDBOX}/f.py"),
     ("silent", "ruff check --select E9 f.py"),
     ("silent", "sort -n f"),
+
+    # Path printers: they transform a string and write nothing, which is why a
+    # missing `realpath` rule was able to withdraw the grant from a 30-segment
+    # loop whose every other command was allowlisted.
+    ("silent", "realpath /workspace/ui"),
+    ("silent", "basename /workspace/a/b"),
+    ("silent", "dirname /workspace/a/b"),
+    ("silent", "readlink -f /workspace/ui"),
+    ("allow",  'echo "$(realpath /workspace/ui)"'),
+    ("allow",  'if [ -d /workspace/ui ]; then echo "$(basename /tmp/x)"; fi'),
+    # `file` reads magic bytes, except -C, which compiles a magic.mgc.
+    ("silent", "file /workspace/a.bin"),
+    ("silent", "file -b --mime-type /workspace/a.bin"),
+    ("silent", "file -c -m /workspace/magic"),        # lowercase c only prints
+    ("ask",    "file -C -m /workspace/magic"),
+    ("ask",    "file --compile -m /workspace/magic"),
+    ("ask",    "file -bC -m /workspace/magic"),       # bundled with -b
     # An attached value is read for short flags only: `--outputfoo` is a
     # different option, not `--output` carrying one.
     ("silent", "git diff --outputfoo=/tmp/x HEAD"),

@@ -29,6 +29,13 @@ SED_INPLACE = re.compile(r"^-[A-Za-z]*i|^--in-place")
 SORT_OUTPUT_FLAGS = {"-o", "--output"}
 RUFF_OUTPUT_FLAGS = {"-o", "--output-file"}
 
+# `file` reads magic bytes -- except -C/--compile, which WRITES a pre-parsed
+# magic.mgc beside the magic file named by -m. Not in OUTPUT_FLAGS above
+# because the path is DERIVED from -m rather than given, so there is no target
+# to prove disposable; it simply asks. Uppercase only: -c prints the parsed
+# form of the magic file and writes nothing.
+FILE_COMPILE_FLAGS = {"-C", "--compile"}
+
 # awk is a language, not a filter: it can redirect and shell out from inside
 # the program text, where shlex has already stripped the quotes that hid it.
 AWK_LIKE = {"awk", "gawk", "mawk", "nawk"}
@@ -211,3 +218,14 @@ GIT_TERMINAL_OPTIONS = {
 }
 # Only these may precede one, and only in their bare form.
 GIT_PAGER_OPTIONS = {"-p", "--paginate", "-P", "--no-pager"}
+
+# `command` exists to run something while bypassing functions and aliases, so
+# it hides a command position and asks. Its two lookup flags are the exception:
+# -v prints how the shell would resolve a name and -V describes it, and NEITHER
+# executes anything. That is `which` with a builtin instead of a subprocess.
+# -p only swaps in the default PATH, so it is accepted alongside them but
+# vouches for nothing on its own. Letters are matched one at a time because
+# bash clusters them (`command -pv ruff`), and an unrecognized letter means a
+# form nobody here has reasoned about -- which might well execute.
+COMMAND_FLAG_LETTERS = set("pvV")
+COMMAND_LOOKUP_LETTERS = set("vV")

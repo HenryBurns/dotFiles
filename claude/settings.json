@@ -1,6 +1,7 @@
 {
   "env": {
     "BASH_ENV": "__HOME__/.claude/bash_env.sh",
+    "PATH": "__HOME__/bin:__HOME__/.local/bin:__HOME__/bin:__HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin",
     "SSH_AUTH_SOCK": "__HOME__/.ssh/ssh_auth_sock"
   },
   "permissions": {
@@ -77,7 +78,15 @@
       "Bash(git version:*)",
       "Bash(git --help:*)",
       "Bash(git -v:*)",
-      "Bash(git -h:*)"
+      "Bash(git -h:*)",
+      "Bash(~/.claude/tools/comment-ratio.py:*)",
+      "Bash(~/.claude/tools/transcript_cost.py:*)",
+      "Bash(command -v:*)",
+      "Bash(command -V:*)",
+      "Bash(realpath:*)",
+      "Bash(basename:*)",
+      "Bash(dirname:*)",
+      "Bash(file:*)"
     ]
   },
   "worktree": {
