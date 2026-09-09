@@ -25,11 +25,9 @@ CHARS_PER_TOKEN = 4
 # Tools whose first argument is a subcommand worth keeping in the family name,
 # so `git log` and `git diff` are counted apart instead of lumped under `git`.
 #
-# Site-specific tools go in the untracked sidecar rather than here, one name per
-# line: this file is published, and a list of internal tool names is itself a
-# disclosure. Same reasoning, and same shape, as sync.py's sync-deny.local.
-# The sidecar is read at import, so those tools break down exactly as the ones
-# below do -- nothing is lost by moving a name out of this file.
+# Site-specific tools go in the untracked sidecar, one name per line: this file
+# is published, and a list of internal tool names is itself a disclosure. Same
+# shape as sync.py's sync-deny.local.
 SUBCOMMAND_TOOLS = ("git", "gh", "jj", "cargo", "npm", "docker", "kubectl")
 LOCAL_TOOL_LIST = Path(__file__).with_name("subcommand-tools.local")
 

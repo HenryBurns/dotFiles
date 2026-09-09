@@ -6,28 +6,17 @@
     why-prompted.py --asks 'pb devel'             # only the ones that prompted
     why-prompted.py --session ba0890ba --asks     # everything one session asked
 
-The sibling tool, why-prompt.py, predicts: it evaluates a command against
-today's rules and today's guard. This one reports: for each time the command
-ran, it prints the hook's own permissionDecision and permissionDecisionReason,
-verbatim, plus how long the call took.
+why-prompt.py predicts, against today's rules and today's guard. This reports:
+the hook's own permissionDecision and permissionDecisionReason, verbatim, plus
+how long the call took. When the two disagree, this one is right -- the guard
+that ran may not be the guard on disk now.
 
-The two disagree more often than they should, and when they do, THIS one is
-right. A guard crash mid-edit once made a command prompt with
-"(TypeError)"; by the time anyone asked why, the guard was repaired and the
-prediction cleared it. Reasoning from the prediction produced a confident wrong
-answer twice in one session -- stale settings, blamed for a prompt that was
-really a path gate -- before anyone read the record.
-
-So: reach for this FIRST when asked "why did this prompt", and use
-why-prompt.py to work out what to change once the cause is known.
-
-A long gap between the call and its result means a human was looking at a
-prompt, but only when the decision was "ask" -- otherwise it is just a slow
-command, and the tool labels it accordingly.
+So reach for this first when asked "why did this prompt", and use why-prompt.py
+to work out what to change once the cause is known.
 
 This reads other sessions' transcripts, which is fine HERE: it is hand-run and
-its output is advisory. The guard must never do it -- unbounded I/O on the
-gating path, and a verdict inferred from a conversation it cannot see.
+advisory. The guard must never do it -- unbounded I/O on the gating path, and a
+verdict inferred from a conversation it cannot see.
 """
 
 import argparse
@@ -68,15 +57,12 @@ def _hook_verdict(stdout):
 def scan_lines(lines, needle):
     """Records for every Bash call in `lines` whose command contains `needle`.
 
-    Returns [(decision, reason, waited)] in call order. `waited` is the seconds
-    between the call and its result, or None when the transcript has no result
-    for it -- an unfinished call, or one whose result was written after this.
+    Returns [(decision, reason, waited)] in call order. `waited` is None when
+    the transcript holds no result for the call.
 
-    Two passes, because a hook attachment and a tool_result are written as
-    separate records that can be far from the call: the first pass collects the
-    ids worth caring about, the second fills them in. That also keeps the memory
-    cost proportional to the MATCHES rather than to the transcript, which
-    matters -- these files reach hundreds of megabytes.
+    Two passes: a hook attachment and a tool_result are separate records that
+    can sit far from the call, and collecting ids first keeps memory
+    proportional to the matches rather than to the transcript.
     """
     order, calls = [], {}
     parsed = []

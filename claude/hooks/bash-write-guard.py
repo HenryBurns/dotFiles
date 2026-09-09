@@ -340,27 +340,14 @@ def ssh_vouched(args, depth, rules):
 
 
 def tmux_reads(args):
-    """True if `tmux <args>` only reports state.
+    """True if `tmux <args>` only reports state. ALWAYS_ASK's tmux exemption.
 
-    tmux belongs in ALWAYS_ASK for the same reason ssh does -- `new-session`,
-    `run-shell` and `send-keys` hand a shell command to a process this guard
-    cannot see -- and this is its one exemption, the same shape as ssh_vouched.
+    Three ways a listing-looking invocation still executes something, all
+    refused: a `-c` or `-f` global option, a literal ';' argument (which starts
+    a second tmux command), and `#(...)` in any argument.
 
-    Three ways a read-only-looking invocation still executes something, all
-    refused here:
-
-      * a global option before the subcommand: -c runs a shell command outright,
-        -f sources a config file that is a list of tmux commands. Only the
-        socket selectors and output tweaks are accepted.
-      * a literal ';' argument, which separates MULTIPLE tmux commands in one
-        invocation. `tmux ls \\; new-session -d '<cmd>'` reaches the shell as
-        `ls`, `;`, `new-session`... so the read-only word in front proves
-        nothing about the rest.
-      * `#(...)` anywhere in an argument. tmux format strings run that as a
-        shell command, so `-F '#(cmd)'` executes on a pure listing subcommand.
-
-    Unlike ssh there is no recursion: tmux commands are tmux's own language,
-    not a shell string, so there is nothing to hand back to find_reasons.
+    No recursion, unlike ssh_vouched: these are tmux's own commands, not a
+    shell string, so there is nothing to hand back to find_reasons.
     """
     rest = list(args)
     while rest and rest[0].startswith("-") and rest[0] != "--":
@@ -549,21 +536,13 @@ def safe_loop_word(word):
     """
     if SUBST_PLACEHOLDER in word:
         return True
-    # A word may legitimately contain spaces -- `for s in "namespace os76"`.
-    # The loop still iterates over the WORDS (two items there, not three); the
-    # splitting that matters happens later, if the BODY uses `$s` unquoted,
-    # where `namespace os76` becomes two arguments. So the hazard is a piece
-    # that could arrive as a flag, not the whitespace itself -- which makes
-    # judging the pieces exact where rejecting all whitespace was merely
-    # conservative. `a -i` still refuses, on its second piece.
+    # The hazard is a piece that could arrive as a flag, not the whitespace
+    # itself: `for s in "namespace os76"` iterates two words, and only an
+    # unquoted `$s` in the body splits them further.
     #
-    # The test is "could this arrive as a flag", NOT "can I read it". A glob
-    # like `conf/*.toml` is unreadable -- the matches depend on the directory
-    # -- but no expansion of it can start with `-`, and an unreadable word is
-    # exactly what the placeholder already records elsewhere. Refusing it made
-    # the guard silent on a loop whose body only ran grep and printf. A word
-    # that IS visibly a flag still refuses: that is a positive identification,
-    # and those are never thrown away.
+    # So the test is "could this arrive as a flag", NOT "can I read it" -- a
+    # glob like `conf/*.toml` is unreadable, but no expansion of it can start
+    # with `-`.
     pieces = word.split()
     return bool(pieces) and not any(p.startswith("-") for p in pieces)
 
@@ -1045,30 +1024,18 @@ def git_fetch_writes(args):
 
 # orchestrator is in ALWAYS_ASK because its subcommands are not separable into
 # readers and writers from argv alone -- submit, abort, resubmit, queue_reorder
-# and pull_request_delete all sit in the same namespace. The exception is a
-# subcommand whose implementation has been READ and shown to be a GET: the
-# reason for the blanket rule is uncertainty, so removing the uncertainty for
-# one subcommand is the honest thing to do, not a weakening of it.
+# and pull_request_delete share the namespace. Exempted here only after reading
+# the implementation: request_status and queue_status are http_session.get and
+# log.info, with no HTTP write verb, no open() and no subprocess.
 #
-# request_status: pull_request_status() does one http_session.get and log.info;
-# job_status has no HTTP write verb, no open(), no subprocess. Its whole
-# surface is one positional id plus five store_true flags, listed here so a
-# sixth appearing in a later version refuses instead of riding along.
-# queue_status: two http_session.get calls and log.info to stdout. No HTTP
-# write verb, no open(), no subprocess of its own. Its whole surface is one
-# optional `to_branch` positional plus the three flags below.
+# --commits and --orig-commits are NOT pure reads. Both reach
+# ensure_commits_fetched, which runs `git fetch origin --quiet <sha>` for a
+# commit not held locally. Granted because `Bash(git fetch:*)` already allows
+# that same fetch, but written down because "status query" does not suggest a
+# network fetch.
 #
-# --commits and --orig-commits are NOT pure reads, in either subcommand: both
-# reach print_commits -> ensure_commits_fetched, which runs
-# `git fetch origin --quiet <sha>` when a commit is not present locally. They
-# stay granted because that is the same fetch `Bash(git fetch:*)` already
-# allows -- no destination refspec and none of T.GIT_FETCH_WRITE_FLAGS -- but it
-# is written down because "status query" does not suggest a network fetch.
-#
-# Flags are per subcommand rather than one shared set: --color and
-# --sort-by-name come from _configure_common_status_arguments, which
-# queue_status does not call, and a set that overstates what a subcommand
-# accepts is a set nobody can check against the source.
+# Flags are listed per subcommand, and exhaustively, so that one added in a
+# later version refuses instead of riding along.
 ORCHESTRATOR_READ_FLAGS = {
     "request_status": {"--show-history", "--commits", "--color",
                        "--orig-commits", "--sort-by-name"},

@@ -210,11 +210,7 @@ CASES = [
     # a piece may even be the command, which the shell word-splits just the same
     ("allow",  'for c in "grep -c"; do $c pattern data.txt; done'),
     # ...but ONLY the token that received the value splits. Splitting every
-    # token because the value happened to contain a space shattered quoted
-    # arguments that never mentioned the loop variable: `echo "a | b"` became
-    # three tokens, the `|` was then read as a pipe, and the phantom segment it
-    # invented matched no rule. Cost prompts only, never silence, but on a
-    # command the shell never runs that way.
+    # token shattered quoted arguments that never mentioned the loop variable.
     ("allow",  'for r in "1 2 x"; do echo "a | b"; done'),
     ("allow",  'for r in "1 2"; do echo "left | right"; done'),
     ("allow",  'for r in "1 2 x"; do grep -n "a b" f; done'),
@@ -1016,22 +1012,11 @@ CASES = [
 # an allowlisted tool through data the guard cannot read. Closing one makes the
 # assertion below fail -- that is the reminder to move it into CASES.
 GAPS = [
-    # A token whose ENTIRE content is ';' loses its quoting in tokenize(), so
-    # split_segments treats `x ';' y` and `x \; y` as two commands where bash
-    # passes ';' to x as a literal argument. (`echo 'a ; b'` is unaffected --
-    # the span has other characters in it.)
-    #
-    # It matters for two real spellings: `tmux ls \; new-session -d '<cmd>'`,
-    # which chains a second tmux command onto a vouched one, and the `\;` that
-    # terminates `find -exec`. The guard invents a phantom segment from the
-    # tail, so it answers "silent" here rather than naming the write.
-    #
-    # Left open deliberately: the error runs in the SAFE direction, because the
-    # phantom segment (`new-session ...`) matches no rule and the rules prompt
-    # on it. Closing it means teaching tokenize() to mark a quoted operator as
-    # a literal, which changes how every `find -exec` is read -- too wide to
-    # carry on the side of a tmux change. Pinned at today's behaviour so that
-    # fixing the tokenizer fails this case and says so.
+    # A token whose entire content is ';' loses its quoting in tokenize(), so
+    # `x \; y` splits into two commands where bash passes ';' to x as an
+    # argument. Also reached by `find -exec ... \;`. Left open because the
+    # phantom segment matches no rule and the rules still prompt; closing it
+    # changes how every find -exec is read.
     ("silent", "tmux ls ';' new-session -d 'rm -rf /data'"),
 ]
 
@@ -1068,17 +1053,8 @@ WHY_PROMPT_CASES = [
 
 
 # why-prompted.py's cases: (label, transcript lines, needle, expected records).
-#
-# A separate tool from why-prompt.py because the two answer different questions.
-# why-prompt.py predicts against TODAY's config; this reports what a session
-# actually decided, from the record. The distinction stopped mattering in theory
-# and started mattering in practice the day a guard crash (a TypeError from a
-# half-applied edit) made a command prompt, and the repaired guard then cleared
-# the same command -- so the prediction was right about now and wrong about then.
-#
-# Each record is (decision, reason, waited). `waited` is the tool_use -> result
-# gap in seconds, which is a wait for a human only when the decision was "ask";
-# otherwise it is just how long the command took.
+# Each expected record is (decision, reason, waited); `waited` is the
+# tool_use -> tool_result gap in seconds.
 _WP_USE = ('{"type":"assistant","timestamp":"%s","message":{"content":'
            '[{"type":"tool_use","id":"%s","name":"Bash",'
            '"input":{"command":%s}}]}}')
