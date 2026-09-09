@@ -229,3 +229,63 @@ GIT_PAGER_OPTIONS = {"-p", "--paginate", "-P", "--no-pager"}
 # form nobody here has reasoned about -- which might well execute.
 COMMAND_FLAG_LETTERS = set("pvV")
 COMMAND_LOOKUP_LETTERS = set("vV")
+
+# ssh runs an arbitrary command on another machine, so it sits in ALWAYS_ASK and
+# the tables below are its one exemption. They enumerate rather than skip,
+# because ssh's OWN flags act LOCALLY before the remote command is reached:
+#   -o ProxyCommand=/-o LocalCommand= run a local program
+#   -E writes a local log file
+#   -L -R -D -W -w open tunnels, -A hands the remote host your agent
+#   -F names a config that can set any of the above
+#   -M -S -O manage a control socket, -f backgrounds, -s selects a subsystem
+# Letters that only pick an address family, quiet/verbosity, or a tty, plus the
+# flags that DISABLE forwarding, are all that is accepted.
+SSH_BOOL_LETTERS = set("46CqvTtnxa")
+# Value-taking flags whose value cannot name a program or a file to write.
+SSH_VALUE_FLAGS = {"-p", "-l", "-c", "-m"}
+# Vetted `-o` keys. ssh config keys are CASE-INSENSITIVE, so the check
+# lowercases before comparing -- `-o proxycommand=x` must not walk past a list
+# written in camel case.
+SSH_SAFE_OPTIONS = {
+    "batchmode", "connecttimeout", "connectionattempts", "loglevel",
+    "stricthostkeychecking", "serveraliveinterval", "serveralivecountmax",
+    "port", "user", "requesttty", "identitiesonly",
+    "passwordauthentication", "pubkeyauthentication", "preferredauthentications",
+}
+
+# tmux is the same problem as ssh in a different costume: `new-session`,
+# `run-shell`, `send-keys`, `if-shell` and `split-window` all execute a shell
+# command, and `kill-server` throws away running work. So tmux is in ALWAYS_ASK
+# and these are its exemptions -- the subcommands that only report.
+#
+# Two traps make this narrower than it looks, and both are checked in the guard
+# rather than here, because neither is a property of the subcommand:
+#   * a -F format string may contain #(...), which tmux runs as a shell command;
+#   * one invocation can hold SEVERAL commands, separated by a literal ';'
+#     argument, so a read-only subcommand in front vouches for nothing.
+TMUX_READ_SUBCOMMANDS = {
+    "ls", "list-sessions",
+    "lsw", "list-windows",
+    "lsp", "list-panes",
+    "lsc", "list-clients",
+    "lscm", "list-commands",
+    "lsk", "list-keys",
+    "lsb", "list-buffers",
+    "show", "show-options",
+    "showw", "show-window-options",
+    "showenv", "show-environment",
+    "display", "display-message",
+    "info",
+}
+# capture-pane is a read ONLY with -p, which prints to stdout. Without it the
+# pane goes into a paste buffer, which `save-buffer` can then write to disk.
+TMUX_CAPTURE_REQUIRES = {"capture-pane": "-p"}
+# tmux's own options, before the subcommand. Deliberately tiny: -c runs a shell
+# command, -f sources a config file that is itself a list of tmux commands, and
+# -C is control mode. What is left only picks a server socket or adjusts output.
+TMUX_GLOBAL_BOOL_LETTERS = set("2Dluvq")
+TMUX_GLOBAL_VALUE_FLAGS = {"-L", "-S"}
+# tmux runs what is inside #(...) -- #{...} is only a variable, but the two are
+# a character apart, so the check looks for the executing spelling anywhere in
+# an argument rather than trying to parse the format language.
+TMUX_FORMAT_EXEC = "#("

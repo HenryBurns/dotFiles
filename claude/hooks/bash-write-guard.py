@@ -152,6 +152,12 @@ ALWAYS_ASK = {
     "nohup": "runs another command the guard cannot attribute",
     "time": "runs another command the guard cannot attribute",
     "command": "runs another command the guard cannot attribute",
+    # The broadest vector there is: an arbitrary command on another machine,
+    # where no allow rule and no workspace boundary reaches. ssh_remote_command
+    # is the one exemption. Listing it here is also what makes a broad
+    # `Bash(ssh:*)` rule survivable, since an ask beats any rule.
+    "ssh": "runs an arbitrary command on another machine",
+    "tmux": "runs an arbitrary command in a server process",
     # -- privilege escalation ------------------------------------------------
     "sudo": "runs another command as another user",
     "doas": "runs another command as another user",
@@ -232,6 +238,155 @@ def set_is_noop(args):
             return False
         expect_option_name = letters.endswith("o")
     return bool(args)
+
+
+def ssh_remote_command(args):
+    """The remote command in `ssh <args>`, or None if the form is not vetted.
+
+    None means "do not reason about this at all" -- an unrecognized flag, a
+    flag that acts locally, a missing destination, or an interactive login with
+    no command to judge. The caller must treat None as a refusal, never as an
+    empty command.
+
+    Two things this deliberately does NOT do. It does not accept a path inside
+    this session's scratchpad: over there that names a different machine's
+    filesystem, and none of it is disposable, so the exemption that makes a
+    local scratchpad write silent must not follow the command across. And it
+    does not itself decide the remote command is safe -- it only extracts it.
+    """
+    index, total = 0, len(args)
+    while index < total:
+        token = args[index]
+        if token == "--":
+            index += 1
+            break
+        if not token.startswith("-") or token == "-":
+            break                       # the destination
+        if token.startswith("-o"):
+            attached = token[2:]
+            if not attached:
+                index += 1
+                if index >= total:
+                    return None
+                attached = args[index]
+            key = attached.partition("=")[0].strip().lower()
+            if key not in T.SSH_SAFE_OPTIONS:
+                return None
+            index += 1
+            continue
+        if token in T.SSH_VALUE_FLAGS:
+            index += 2
+            continue
+        letters = token[1:]
+        if not letters or not all(c in T.SSH_BOOL_LETTERS for c in letters):
+            return None
+        index += 1
+
+    if index >= total:
+        return None                     # no destination
+    index += 1                          # the destination itself
+    remote = args[index:]
+    if not remote:
+        return None
+    # ssh joins its remaining arguments with spaces and hands the result to the
+    # remote shell, so that is exactly the string to judge.
+    text = " ".join(remote)
+    if not text.strip():
+        return None
+    # Substring, not per-token: the remote command usually arrives as ONE
+    # quoted argument, so `in_sandbox` on the tokens never sees the path buried
+    # inside it -- which is how `ssh host 'sort -o <scratchpad>/f data'` came
+    # back allow. Over there that path is a different machine's filesystem and
+    # nothing about it is disposable, so refuse rather than let the exemption
+    # travel.
+    if SANDBOX_ANYWHERE.search(text):
+        return None
+    return text
+
+
+def ssh_vouched(args, depth, rules):
+    """True if `ssh <args>` carries a command this guard can stand behind.
+
+    Three conditions, and all three are needed:
+
+      1. ssh's own flags are vetted (ssh_remote_command).
+      2. The remote command has no write reason of its own.
+      3. Every command position in it is ALLOWLISTED, checked with the same
+         analyze() that clears a local compound.
+
+    Condition 3 is why `rules` is threaded this far. Without it the exemption
+    cleared `ssh host some_unknown_tool --wipe`: write-free, because the guard
+    has never heard of the tool. Locally the rule gate catches that; across an
+    ssh there is no rule gate, so an unvouchable remote command has to produce
+    an ASK here rather than a silence for the rules to mis-handle. Silence
+    would leave a `Bash(ssh:*)` rule waving the whole class through -- which is
+    the very thing listing ssh in ALWAYS_ASK is supposed to prevent.
+
+    No rules available means no vouching. That is the fail-safe direction.
+    """
+    if rules is None or depth > MAX_SUBST_DEPTH:
+        return False
+    remote = ssh_remote_command(args)
+    if remote is None:
+        return False
+    if find_reasons(remote, depth + 1, rules):
+        return False
+    prefix, deny = rules
+    # roots is emptied deliberately: the workspace test means nothing on
+    # another machine, and applying it there would either reject ordinary
+    # remote paths or, worse, accept one for looking local.
+    permitted, _ = analyze(remote, prefix, deny, depth + 1, ())
+    return permitted
+
+
+def tmux_reads(args):
+    """True if `tmux <args>` only reports state.
+
+    tmux belongs in ALWAYS_ASK for the same reason ssh does -- `new-session`,
+    `run-shell` and `send-keys` hand a shell command to a process this guard
+    cannot see -- and this is its one exemption, the same shape as ssh_vouched.
+
+    Three ways a read-only-looking invocation still executes something, all
+    refused here:
+
+      * a global option before the subcommand: -c runs a shell command outright,
+        -f sources a config file that is a list of tmux commands. Only the
+        socket selectors and output tweaks are accepted.
+      * a literal ';' argument, which separates MULTIPLE tmux commands in one
+        invocation. `tmux ls \\; new-session -d '<cmd>'` reaches the shell as
+        `ls`, `;`, `new-session`... so the read-only word in front proves
+        nothing about the rest.
+      * `#(...)` anywhere in an argument. tmux format strings run that as a
+        shell command, so `-F '#(cmd)'` executes on a pure listing subcommand.
+
+    Unlike ssh there is no recursion: tmux commands are tmux's own language,
+    not a shell string, so there is nothing to hand back to find_reasons.
+    """
+    rest = list(args)
+    while rest and rest[0].startswith("-") and rest[0] != "--":
+        flag = rest.pop(0)
+        if flag in T.TMUX_GLOBAL_VALUE_FLAGS:
+            if not rest:
+                return False               # value missing: unparseable
+            rest.pop(0)
+            continue
+        letters = flag[1:]
+        if not letters or not all(c in T.TMUX_GLOBAL_BOOL_LETTERS
+                                  for c in letters):
+            return False                   # -c, -f, -C, or anything unknown
+    if rest and rest[0] == "--":
+        rest.pop(0)
+    if not rest:
+        return False                       # bare `tmux` starts a server
+    sub, sub_args = rest[0], rest[1:]
+    if sub in T.TMUX_CAPTURE_REQUIRES:
+        if T.TMUX_CAPTURE_REQUIRES[sub] not in sub_args:
+            return False
+    elif sub not in T.TMUX_READ_SUBCOMMANDS:
+        return False
+    # ';' ends the vouched command and starts an unvouched one; a format may
+    # carry a shell command into even the safest subcommand.
+    return not any(a == ";" or T.TMUX_FORMAT_EXEC in a for a in sub_args)
 
 
 def command_is_lookup(args):
@@ -522,6 +677,11 @@ def strip_leading_keywords(segment):
 # user's /tmp/claude-* directory is not somewhere we will write unprompted.
 SANDBOX_DIR = re.compile(
     r"^/tmp/claude-%d/[^/]+/[^/]+/scratchpad(/|$)" % os.getuid())
+# The same path found ANYWHERE in a string rather than anchored at its start.
+# Only ssh uses it: the remote command arrives as one quoted argument, so the
+# per-token test cannot see a scratchpad path inside it.
+SANDBOX_ANYWHERE = re.compile(
+    r"/tmp/claude-%d/[^/\s]+/[^/\s]+/scratchpad" % os.getuid())
 
 
 def in_sandbox(target):
@@ -913,11 +1073,15 @@ ORCHESTRATOR_READ_FLAGS = {
     "request_status": {"--show-history", "--commits", "--color",
                        "--orig-commits", "--sort-by-name"},
     "queue_status": {"--commits", "--fail-summary", "--num-completed"},
+    # Prints local identity only -- the skill records it printing a name on a
+    # day with nobody logged in, which is exactly why it is NOT a liveness
+    # check. No flags are vetted, so any flag at all refuses.
+    "whoami": set(),
 }
 # `to_branch` defaults to the cwd's upstream, so a bare `orchestrator
 # queue_status` is a vetted shape. A bare `request_status` is not: argparse
 # requires its id.
-ORCHESTRATOR_OPTIONAL_POSITIONAL = {"queue_status"}
+ORCHESTRATOR_OPTIONAL_POSITIONAL = {"queue_status", "whoami"}
 
 
 def orchestrator_reads(args):
@@ -1076,8 +1240,16 @@ def git_config_writes(args):
     return len(positionals) >= 2
 
 
-def segment_reasons(segment):
-    """Write-capability reasons for one simple command."""
+def segment_reasons(segment, literals=frozenset(), depth=0, rules=None):
+    """Write-capability reasons for one simple command.
+
+    `literals` are token texts proven to have come from single-quoted spans;
+    see single_quoted_literals. Defaulting to empty keeps every caller correct
+    without it, in the asking direction.
+
+    `depth` bounds the recursion into an ssh remote command, which is itself a
+    command that may contain another ssh.
+    """
     segment = strip_leading_keywords(segment)
     if not segment:
         return []
@@ -1103,8 +1275,17 @@ def segment_reasons(segment):
     # And again: `command` asks because it runs its argument, except in the
     # -v/-V forms, which run nothing.
     command_lookup = (name == "command" and command_is_lookup(rest))
+    # Same shape again, one level deeper: ssh stops asking only when its own
+    # flags are vetted AND the command it carries has no write reason of its
+    # own. Whether that remote command is ALLOWLISTED is a separate question,
+    # answered in analyze() -- there is no rule gate on the far side of an ssh,
+    # so "no write reason" alone would let an unknown remote program through.
+    ssh_read = name == "ssh" and ssh_vouched(rest, depth, rules)
+    # And once more for tmux, which hands a shell command to a server process
+    # the same way ssh hands one to another machine.
+    tmux_read = name == "tmux" and tmux_reads(rest)
     if (name in ALWAYS_ASK and not tee_to_scratch and not orchestrator_read
-            and not command_lookup):
+            and not command_lookup and not ssh_read and not tmux_read):
         reasons.append(f"{name} {ALWAYS_ASK[name]}")
 
     if name == "sed" and any(T.SED_INPLACE.match(t) for t in rest):
@@ -1164,7 +1345,8 @@ def segment_reasons(segment):
     git_sub = sub in T.GIT_FLAG_SENSITIVE
     flag_args = sub_args if git_sub else rest
     if name in T.FLAG_SENSITIVE or git_sub:
-        if any(a.startswith("$") or a.startswith(SUBST_PLACEHOLDER)
+        if any((a.startswith("$") or a.startswith(SUBST_PLACEHOLDER))
+               and a not in literals
                for a in flag_args):
             reasons.append(f"{name} takes an argument from an expansion the "
                            f"guard cannot see, which could be a write flag")
@@ -1218,7 +1400,61 @@ def segment_reasons(segment):
     return reasons
 
 
-def _flat_reasons(text):
+def single_quoted_literals(text):
+    """Token texts that appear ONLY inside single quotes in `text`.
+
+    Bash single quotes suppress every expansion, so a token taken whole from
+    such a span cannot be one. shlex discards the quotes with `posix=True`, so
+    a literal awk program read as an opaque argument -- and inconsistently,
+    since the flag-sensitive check only asks whether a token STARTS with `$`:
+    `awk '$1<10'` asked while `awk '{print $1}'` did not, for no reason that
+    had anything to do with writing.
+
+    A text qualifies only when EVERY occurrence of it in the command is
+    single-quoted. `awk '$HOME' $HOME` yields nothing: shlex renders the two
+    tokens identically, so vouching for one would vouch for the other, and the
+    unquoted one can expand to a flag. Counting by substring also disqualifies
+    a text that happens to occur inside some longer word, which costs a prompt
+    and never grants one.
+    """
+    spans, quote, index, total = [], None, 0, len(text)
+    while index < total:
+        char = text[index]
+        if quote == "'":
+            # No escapes exist inside single quotes -- not even \' -- so the
+            # next quote always ends the span.
+            if char == "'":
+                quote = None
+            else:
+                spans[-1] += char
+            index += 1
+            continue
+        if quote == '"':
+            if char == "\\" and index + 1 < total:
+                index += 2
+                continue
+            if char == '"':
+                quote = None
+            index += 1
+            continue
+        if char == "'":
+            quote = "'"
+            spans.append("")
+        elif char == '"':
+            quote = '"'
+        index += 1
+
+    if quote is not None:
+        return frozenset()          # unbalanced: vouch for nothing
+
+    counts = {}
+    for span in spans:
+        counts[span] = counts.get(span, 0) + 1
+    return frozenset(span for span, seen in counts.items()
+                     if span and text.count(span) == seen)
+
+
+def _flat_reasons(text, depth=0, rules=None):
     """Write reasons for text with no unexpanded $(...) left in it."""
     try:
         tokens, _ = expand(tokenize(text))
@@ -1227,9 +1463,10 @@ def _flat_reasons(text):
         # normal prompt rather than allowing or blocking on a bad parse.
         return ["command could not be parsed"]
 
+    literals = single_quoted_literals(text)
     reasons = []
     for segment in split_segments(tokens):
-        reasons.extend(segment_reasons(segment))
+        reasons.extend(segment_reasons(segment, literals, depth, rules))
     return reasons
 
 
@@ -1294,7 +1531,14 @@ def _substitute_loop_word(token, name, word):
     like `"== $f"` is left whole where nothing is gained by breaking it up.
     """
     substituted = _substitute_var(token, name, word)
-    return substituted.split() if len(word.split()) > 1 else [substituted]
+    # Only the token that actually RECEIVED the value can word-split. Splitting
+    # every token because the value happened to contain a space shattered
+    # quoted arguments that never mentioned the loop variable -- `echo "a | b"`
+    # became three tokens, and the `|` was then read as a pipe, inventing a
+    # command segment the shell never runs.
+    if substituted == token or len(word.split()) < 2:
+        return [substituted]
+    return substituted.split()
 
 
 def expand_loops(tokens):
@@ -1511,7 +1755,7 @@ def _substitute_var(token, name, value):
     return re.sub(pattern, lambda _match: value, token)
 
 
-def find_reasons(command, depth=0):
+def find_reasons(command, depth=0, rules=None):
     """Write-capability reasons for a command, substitution-aware.
 
     Raw text cannot go straight to shlex, which has no concept of `$(...)`: a
@@ -1541,9 +1785,10 @@ def find_reasons(command, depth=0):
             "(backticks, process substitution, or unbalanced quotes)"]))
 
     stripped = strip_substitutions(command, spans)
-    reasons = _flat_reasons(stripped)
+    reasons = _flat_reasons(stripped, depth, rules)
     for start, end in spans:
-        reasons.extend(find_reasons(command[start + 2:end - 1], depth + 1))
+        reasons.extend(find_reasons(command[start + 2:end - 1], depth + 1,
+                                    rules))
     return list(dict.fromkeys(reasons))
 
 
@@ -1978,6 +2223,7 @@ def analyze(text, prefix, deny, depth, roots=()):
     except ValueError:
         return False, False
 
+    literals = single_quoted_literals(text)
     expanded, unrolled = expand(tokens)
     commands, saw_control = executable_commands(expanded)
     if commands is None:
@@ -1990,7 +2236,7 @@ def analyze(text, prefix, deny, depth, roots=()):
         # A substitution in command position would run whatever it printed.
         if SUBST_PLACEHOLDER in segment[0]:
             return False, False
-        if segment_reasons(segment):
+        if segment_reasons(segment, literals, depth, (prefix, deny)):
             return False, False
         if segment[0] in NOOP_BUILTINS:
             continue
@@ -2007,6 +2253,22 @@ def analyze(text, prefix, deny, depth, roots=()):
         # whether it is allowed.
         if segment[0] == "command" and not command_is_lookup(segment[1:]):
             return False, False
+        # An ssh that reaches here was already vouched for by segment_reasons
+        # above -- flags vetted, remote command write-free and allowlisted --
+        # since anything else produced a reason and returned. All that is left
+        # is to say so: no prefix rule can express any of that, so leaving it
+        # to the rules would withdraw the grant from everything beside it.
+        if segment[0] == "ssh":
+            needs_grant = True
+            continue
+        # tmux for the same reason, and it is worth stating why this is a grant
+        # rather than a rule. `Bash(tmux:*)` cannot say "the reporting
+        # subcommands only" -- and could not be trusted to, since a -F format
+        # smuggles a shell command into even `tmux ls`. The vouching lives here,
+        # so the grant does too, and no tmux rule is needed in settings.json.
+        if segment[0] == "tmux":
+            needs_grant = True
+            continue
         permitted, was_local = segment_permitted(segment, prefix, deny)
         if not permitted:
             return False, False
@@ -2115,8 +2377,13 @@ def _load_cases():
 
 
 def _verdict(command, fixtures):
-    """What the hook would emit for this command: ask / allow / silent."""
-    if find_reasons(command):
+    """What the hook would emit for this command: ask / allow / silent.
+
+    The rules go to find_reasons exactly as _decide passes them, or the ssh
+    exemption cannot vouch for anything and every ssh case asks -- which is how
+    this harness first reported the fix as broken.
+    """
+    if find_reasons(command, rules=(fixtures.TEST_RULES, [])):
         return "ask"
     permitted, needs_grant = analyze(command, fixtures.TEST_RULES, [], 0,
                                      fixtures.TEST_ROOTS)
@@ -2332,12 +2599,16 @@ def _decide():
     if not command.strip():
         return 0
 
-    reasons = find_reasons(command)
+    cwd = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    # The rules reach find_reasons only because of ssh: vouching for a remote
+    # command needs the allowlist, and there is no rule gate on the far side to
+    # apply it later. Everything else here decides without them.
+    prefix, _, deny = collect_rules(cwd)
+    reasons = find_reasons(command, rules=(prefix, deny))
     if reasons:
         emit("ask", "Write-capable command: " + "; ".join(reasons))
         return 0
 
-    cwd = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     if grant_verdict(command, cwd):
         emit("allow", "Every command is allowlisted and read-only, or "
                       "covered by a local grant")

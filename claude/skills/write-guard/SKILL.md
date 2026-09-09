@@ -12,9 +12,9 @@ guard checks — that lives in the code, where it cannot drift:
 |---|---|
 | What does it check, and why this flag? | `~/.claude/hooks/bash-write-guard-tables.py` — per-tool knowledge, each table beside its rationale |
 | How does it decide? | `~/.claude/hooks/bash-write-guard.py` — parsing, the checks, the harness |
-| What is it pinned against? | `~/.claude/hooks/bash-write-guard-cases.py` — `TEST_RULES`, `CASES`, `GAPS`; data only |
+| What is it pinned against? | `~/.claude/hooks/bash-write-guard-cases.py` — `TEST_RULES`, `CASES`, `GAPS`, `WHY_PROMPT_CASES`; data only, for both tools |
 | What are the two jobs? | its module docstring |
-| Why did *this* command prompt? | `~/.claude/tools/why-prompt.py '<the exact command>'` |
+| Why did *this* command prompt? | `~/.claude/tools/why-prompt.py '<the exact command>'`, pinned by `--test` |
 | How does a prompt get decided at all? | `claude/README.md` in the dotfiles repo (not installed into `~/.claude`) |
 | Site-specific grants | `~/.claude/hooks/local_grants.py`, untracked — never put a local path or an internal name in the guard itself |
 
@@ -99,6 +99,13 @@ takes its command as real argv (not a shell string), and does not change identit
 `WRAPPERS` table records why each candidate was accepted or rejected — extend it rather than
 special-casing a name in code.
 
+**The gating path reads only local, bounded inputs.** Settings files, the command string, and
+the tables — nothing else. In particular the guard must never scan session transcripts, however
+useful the evidence there looks: it is unbounded I/O under a 10-second hook timeout, and it
+infers a verdict from a conversation the guard cannot see. `why-prompt.py` may do it, because it
+is run by hand and its output is advisory; a gating decision may not. Keep the distinction —
+the same evidence is fine as information and dangerous as a gate.
+
 **Fail closed.** A crash must still emit `ask`. The guard was once fail-*open*: a raised
 exception exited non-zero with no stdout, which a `PreToolUse` hook treats as a non-blocking
 error, leaving the rules to decide alone. `_decide()` plus the top-level `except` is what
@@ -153,8 +160,14 @@ Before granting one:
 
 ## Definition of done
 
-1. `~/.claude/hooks/bash-write-guard.py --test` — all cases, 0 unexpected.
-2. **Every fix earns a case.** Add the command that was mishandled, not a paraphrase of it.
+1. `~/.claude/hooks/bash-write-guard.py --test` — all cases, 0 unexpected. Run it **before**
+   editing too, not only after. Two sessions editing these files at once dropped a check whose
+   table and cases both survived, and half-landed a feature whose cases were already committed;
+   the suite named both in seconds. A red suite you did not cause is the first thing to
+   establish, because the loss shows up in the under-ask direction.
+2. **Every fix earns a case**, written in the cases file, never inline in the tool. Add the
+   command that was mishandled, not a paraphrase of it. Write the case first and watch it fail
+   — a case that passes before the fix is pinning something else.
 3. A gap you cannot close goes in `GAPS`, asserted at its *current* behaviour, so closing it
    later fails the suite as a reminder. Never leave a known hole undocumented.
 4. Verify through the real interface, not just the unit under test: feed the hook a JSON
@@ -162,7 +175,17 @@ Before granting one:
    nothing end to end.
 5. Publishing: `python3 claude/sync.py --check`, then `sync.py`. Its keyword scan **aborts** on
    workplace-specific content — including in test cases, which is how a real path once got
-   caught on its way out. Use a neutral placeholder path in cases.
+   caught on its way out. Use a neutral placeholder path in cases. `sync.py`'s `FILES` list is
+   explicit, so a new file is silently skipped until it is added there.
+
+   **A tool whose NAME is workplace-specific gets a grant and no rule.** A
+   `Bash(~/.claude/tools/<internal-name>.py:*)` line in `settings.json` is published, trips the
+   keyword scan, and then blocks every later publish — not just its own. Put it in
+   `local_grants.py`'s `LOCAL_TOOLS` instead, which is untracked. That is sufficient on its
+   own: a grant emits `allow`, which clears the rule gate and the path gate together, so the
+   settings rule was never the load-bearing half. Prefer grant-only for any local tool; the
+   rule buys nothing a grant does not, and it is what forces internal names out of a published
+   file.
 6. `settings.json` is read **at startup only** — a new rule or directory needs a Claude Code
    restart before it is live. Hook files are re-read per command and need no restart.
    `why-prompt.py` warns when settings are newer than the running process; believe it.
@@ -182,7 +205,45 @@ in a row. Check `settings.json` before concluding the guard is at fault.
 
 **Do not trust a reduced repro that drops a segment.** Shortening a failing compound can remove
 the very ingredient that caused it (a leading `cd` changes which paths are in-workspace).
-Reproduce with the command exactly as it was run, then reduce.
+Reproduce with the command exactly as it was run, then reduce. The match is against the exact
+JSON-escaped text, so a transcribed backslash-newline that got flattened matches no transcript
+at all.
+
+**A transcript's first timestamp is not a process start.** `--resume` keeps the old transcript,
+so a session whose conversation began three weeks ago may be running a process started minutes
+ago against current settings. "That session is stale" is a hypothesis, not a finding — and a
+comfortable one, because it blames nothing. Measure it:
+
+```bash
+ps -eo pid,lstart,etimes,args | grep '[c]laude'   # --resume=<id> names the session
+```
+
+This produced two wrong answers in one session, both stated confidently, on a command whose
+real cause was the path gate. `sessions_that_ran()` reports "began before the rules changed"
+and says in its own docstring that this is a hint and not a proof. Believe the docstring.
+
+**The path gate is checked against the RESOLVED path.** `ls -l "$SSH_AUTH_SOCK"` reads
+`/u/<user>/.ssh/ssh_auth_sock`, which no token spells, so inspecting argv finds no path and
+`why-prompt.py` used to answer "no prompt expected" for a command that prompted every time.
+It now substitutes names the settings `env` block defines before checking.
+
+**The guard is deliberately not taught the same trick.** Expanding those there would make it
+vouch for the path and emit `allow` — which bypasses the very gate that was doing its job, on a
+directory holding private keys. Diagnosis wants the wider view; the grant does not. The same
+asymmetry applies to anything the guard cannot read: widening what the *diagnostic* sees is
+free, widening what the *grant* covers is not.
+
+**Editing the guard breaks it for every other live session, mid-edit.** Sessions share one hook
+file and re-read it on every Bash call, so a change spread over several `Edit`s exposes an
+intermediate file that is syntactically valid and semantically inconsistent — a caller passing an
+argument the callee's signature does not yet take. Threading `rules` through `find_reasons` →
+`_flat_reasons` → `segment_reasons` did exactly this: a 100-second window, three commands in two
+sessions, each answered `ask ... (TypeError)`. Fail-closed did its job, so the damage was only
+prompts. Batch a signature change into one edit; the window shrinks but never closes.
+
+When diagnosing afterwards, note that `why-prompt.py` runs the guard as it exists *now*. Against
+a repaired guard it clears a command that genuinely prompted, then offers a plausible wrong cause.
+The transcript records the truth — the hook's own `permissionDecisionReason`, verbatim.
 
 **Prompts are the bug report.** Nearly every real defect here was found by asking "why did this
 mundane command prompt?", not by auditing. Take the question seriously: an unexpected prompt on

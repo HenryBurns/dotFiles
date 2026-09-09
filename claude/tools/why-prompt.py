@@ -17,6 +17,7 @@ import datetime
 import importlib.util
 import json
 import os
+import re
 import sys
 
 HOME = os.path.expanduser("~")
@@ -165,6 +166,58 @@ def settings_sources(cwd):
     ]
 
 
+def settings_env(cwd):
+    """The `env` block Claude Code injects, merged in load order."""
+    env = {}
+    for _, path in settings_sources(cwd):
+        try:
+            with open(path) as handle:
+                block = (json.load(handle) or {}).get("env")
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(block, dict):
+            env.update({k: v for k, v in block.items() if isinstance(v, str)})
+    return env
+
+
+ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def strays_for(segment, env, roots, guard):
+    """Paths in `segment` that fall outside the workspace.
+
+    Known env names are substituted first, because the gate is checked against
+    the RESOLVED path: `ls -l "$SSH_AUTH_SOCK"` reads a path that no token
+    spells. An unknown name is left as written rather than guessed at.
+    """
+    def resolve(match):
+        return env.get(match.group(1) or match.group(2), match.group(0))
+    expanded = [ENV_REF.sub(resolve, token) for token in segment]
+    return guard.outside_workspace(expanded, roots)
+
+
+def selftest():
+    """Run WHY_PROMPT_CASES from the guard's cases file. Returns failures."""
+    guard = load_guard()
+    if guard is None:
+        raise SystemExit(f"could not load guard hook at {GUARD}")
+    spec = importlib.util.spec_from_file_location(
+        "bash_write_guard_cases",
+        os.path.join(HOME, ".claude", "hooks", "bash-write-guard-cases.py"))
+    cases = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cases)
+
+    failed = 0
+    for label, segment, env, expected in cases.WHY_PROMPT_CASES:
+        got = strays_for(segment, env, cases.TEST_ROOTS, guard)
+        if got != expected:
+            failed += 1
+            print(f"FAIL  {label}\n      segment  {segment}\n"
+                  f"      expected {expected}\n      got      {got}")
+    print(f"{len(cases.WHY_PROMPT_CASES)} cases, {failed} failed")
+    return failed
+
+
 def collect_rules(cwd):
     """(prefix_rules, exact_rules, deny_rules), each as (pattern, source)."""
     prefix, exact, deny = [], [], []
@@ -229,6 +282,9 @@ def match(text, rules):
 
 
 def main():
+    if "--test" in sys.argv[1:]:
+        return 1 if selftest() else 0
+
     command = " ".join(sys.argv[1:]).strip() or sys.stdin.read().strip()
     if not command:
         raise SystemExit("usage: why-prompt.py '<bash command>'")
@@ -264,6 +320,7 @@ def main():
             break
 
     roots = guard.workspace_roots(cwd)
+    env = settings_env(cwd)
     segments = split_segments(command, guard)
     rendered = [" ".join(seg) for seg in segments]
     width = min(max((len(s) for s in rendered), default=10), 52)
@@ -284,7 +341,7 @@ def main():
                 blockers.append(f"{segment[0]}: no rule")
         print(f"{shown:<{width}}  {verdict}")
 
-        stray = guard.outside_workspace(segment, roots)
+        stray = strays_for(segment, env, roots, guard)
         if stray:
             print(f"{'':<{width}}  ^ OUTSIDE WORKSPACE: {', '.join(stray)}")
             blockers.append(f"path outside workspace: {stray[0]}")

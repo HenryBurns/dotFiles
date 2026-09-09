@@ -23,10 +23,13 @@ TEST_RULES = [(pattern, "test") for pattern in (
     "git merge-base",
     "git grep", "git status", "git show", "git diff", "git rev-parse",
     "git rev-list", "git config", "git remote", "git ls-remote", "stat",
+    "git check-ignore",
     "git shortlog", "git archive", "git bundle", "git format-patch",
     "ruff", "realpath", "basename", "dirname", "file", "readlink",
-    "command -v", "command -V",
+    "command -v", "command -V", "ps",
 )]
+# No tmux rule, deliberately -- like ssh, a vouched tmux is granted by the hook
+# and an unvouched one is an ask, so a rule would change nothing either way.
 
 
 TEST_ROOTS = ("/workspace",)
@@ -206,6 +209,15 @@ CASES = [
     ("ask",    'for f in "x -i"; do sed "$f" y; done'),
     # a piece may even be the command, which the shell word-splits just the same
     ("allow",  'for c in "grep -c"; do $c pattern data.txt; done'),
+    # ...but ONLY the token that received the value splits. Splitting every
+    # token because the value happened to contain a space shattered quoted
+    # arguments that never mentioned the loop variable: `echo "a | b"` became
+    # three tokens, the `|` was then read as a pipe, and the phantom segment it
+    # invented matched no rule. Cost prompts only, never silence, but on a
+    # command the shell never runs that way.
+    ("allow",  'for r in "1 2 x"; do echo "a | b"; done'),
+    ("allow",  'for r in "1 2"; do echo "left | right"; done'),
+    ("allow",  'for r in "1 2 x"; do grep -n "a b" f; done'),
     # ...while ordinary literal word lists keep working
     ("allow",  'for u in https://a.example/ https://b.example/; do echo "$u"; done'),
     ("allow",  "for c in 0fe44dfb28e2:495458 aedc918bcd:1234; do echo $c; done"),
@@ -327,6 +339,109 @@ CASES = [
     # An option name or letter that was not vetted refuses rather than guessing.
     ("silent", "set -o badoption; echo hi"),
 
+    # Bash single quotes suppress expansion absolutely, so a token taken whole
+    # from a single-quoted span cannot be one. shlex discards the quotes, which
+    # made a literal awk program read as an opaque argument -- and arbitrarily:
+    # `awk '$1<10'` asked while `awk '{print $1}'` did not, because the check
+    # only looks at whether the token STARTS with `$`.
+    ("silent", "awk -F: '$1<4362' f"),
+    ("silent", "awk '{print $1}' f"),             # never asked; pinned anyway
+    ("silent", "grep -n x f | awk -F: '$1<99'"),
+    ("silent", "sed -n '$p' f"),                  # last line, not a variable
+    ("silent", "awk '$1 > 5' f"),                 # a COMPARISON, not a redirect
+    # Double quotes do expand, so nothing changes for them.
+    ("ask",    'awk "$prog" f'),
+    ("ask",    'sed -n "$script" f'),
+    # A real redirect inside a single-quoted program is still a write, and the
+    # literal marking must not stop AWK_WRITE from reading it.
+    ("ask",    "awk '{print > \"/etc/x\"}' f"),
+    ("ask",    "awk '{system(\"rm -rf x\")}' f"),
+    # The same text quoted AND unquoted: the unquoted one could expand to a
+    # flag, and they are indistinguishable by text, so the segment still asks.
+    ("ask",    "awk '$HOME' $HOME"),
+
+    # `whoami` prints LOCAL identity and nothing else -- the orchestrator skill
+    # records it printing a name on a day with no login at all, which is why it
+    # is not a liveness check. Nothing about it reaches a shared branch, so it
+    # joins the two status subcommands as a proven read.
+    ("silent", "orchestrator whoami"),
+    ("ask",    "orchestrator whoami --force"),      # an unvetted flag refuses
+    ("ask",    "orchestrator submit HEAD~1..HEAD"),
+    ("ask",    "orchestrator whoami > /workspace/out"),
+
+    # Read from `-h`, not assumed: every git check-ignore flag (-q -v -n -z
+    # --stdin --index/--no-index) only reports. It takes no output file, so it
+    # is not flag-sensitive either -- unlike the diff-machinery subcommands,
+    # where an unreadable argument could be `--output=`.
+    ("silent", "git check-ignore -v .claude/settings.local.json"),
+    ("silent", "git check-ignore --stdin -z"),
+    ("ask",    "git check-ignore -v f > /workspace/out"),
+
+    # `ps` reads /proc and has no write flag, so only a redirect makes it write.
+    # Allowlisted because the write-guard skill names this exact command as the
+    # way to tell a resumed session's process age from its transcript's date.
+    ("silent", "ps -eo pid,lstart,etimes,args"),
+    ("ask",    "ps -eo args > /workspace/out"),
+
+    # ssh carries an arbitrary command to a machine where no allow rule and no
+    # workspace boundary reaches, so it is in ALWAYS_ASK and this is its one
+    # exemption: vetted flags, and a remote command that passes the same
+    # read-only AND allowlist test a local one would.
+    ("allow",  "ssh -o BatchMode=yes -o ConnectTimeout=8 host 'ls /home'"),
+    ("allow",  "ssh -p 22 host 'grep -c VmHWM /proc/self/status'"),
+    ("allow",  "ssh -4Cq host 'cat /etc/hostname'"),          # a bool cluster
+    # The remote command is judged, not trusted.
+    ("ask",    "ssh host 'rm -rf /data'"),
+    ("ask",    "ssh host 'echo x > /etc/f'"),                 # remote redirect
+    ("ask",    'ssh host "$CMD"'),                            # unreadable
+    # Write-free is NOT enough. There is no rule gate on the far side, so an
+    # unknown remote program has to ASK rather than fall silent -- silence
+    # would let a `Bash(ssh:*)` rule wave the whole class through, which is the
+    # very thing listing ssh in ALWAYS_ASK is meant to prevent.
+    ("ask",    "ssh host some_unknown_tool --wipe"),
+    # ssh's OWN flags act locally, before the remote command is reached.
+    ("ask",    "ssh -o ProxyCommand=nc host ls"),             # local exec
+    ("ask",    "ssh -o proxycommand=nc host ls"),             # keys are case-insensitive
+    ("ask",    "ssh -E /tmp/log host ls"),                    # writes locally
+    ("ask",    "ssh -F /tmp/cfg host ls"),                    # config can set ProxyCommand
+    ("ask",    "ssh -A host ls"),                             # forwards the agent
+    ("ask",    "ssh -L 8080:localhost:80 host ls"),           # tunnel
+    ("ask",    "ssh -M -S /tmp/ctl host ls"),                 # control socket
+    ("ask",    "ssh host"),                                   # interactive login
+    # A scratchpad path names another machine's filesystem over there, so the
+    # exemption that makes a local scratchpad write silent must not follow.
+    ("ask",    f"ssh host 'sort -o {SANDBOX}/f data'"),
+
+    # tmux is a command runner wearing a listing tool's clothes: `new-session`,
+    # `run-shell` and `send-keys` all execute. Same shape as ssh -- ALWAYS_ASK,
+    # with an exemption for the subcommands that only report.
+    ("allow",  "tmux ls"),
+    ("allow",  "tmux list-sessions"),
+    ("allow",  "tmux list-panes -a"),
+    ("allow",  "tmux -L bench ls"),                           # socket selector
+    ("allow",  "tmux capture-pane -p -t bench"),
+    ("ask",    "tmux new-session -d 'rm -rf /data'"),
+    ("ask",    "tmux run-shell 'curl evil'"),
+    ("ask",    "tmux send-keys -t 0 'rm -rf /' Enter"),
+    ("ask",    "tmux kill-server"),
+    # capture-pane WITHOUT -p writes the pane into a paste buffer instead of
+    # printing it, and `save-buffer` then puts that on disk. Only the printing
+    # form is a read.
+    ("ask",    "tmux capture-pane -t bench"),
+    ("ask",    "tmux save-buffer /tmp/out"),
+    # A format string is not inert: #(...) runs a shell command, so a read-only
+    # subcommand can carry an arbitrary one in its -F argument.
+    ("ask",    "tmux ls -F '#(rm -rf /data)'"),
+    # (The ';' chaining form is a tokenizer gap, pinned in GAPS below.)
+    # -f sources a config file, whose contents are tmux commands; -c runs a
+    # shell command outright. Both act before any subcommand is reached.
+    ("ask",    "tmux -f /tmp/cfg ls"),
+    ("ask",    "tmux -c 'rm -rf /data'"),
+    # ...and the whole thing again on the far side of an ssh, where the rule
+    # gate that would otherwise catch `tmux new-session` does not exist.
+    ("allow",  "ssh -o BatchMode=yes host 'tmux ls'"),
+    ("ask",    "ssh -o BatchMode=yes host 'tmux new-session -d \"rm -rf /\"'"),
+
     # `command -v` resolves a name and runs nothing -- `which` as a builtin. It
     # was in REFUSED_WORDS *and* ALWAYS_ASK, so a `command -v ruff` beside six
     # allowlisted segments made the whole line ask.
@@ -360,18 +475,22 @@ CASES = [
     ("ask",    "chmod 0755 f"),
     ("ask",    "ln -s a b"),
     ("ask",    "tar -xzf x.tar.gz"),
-    # orchestrator asks on EVERY subcommand, reads included -- see the table.
     # These pin the ways a command word can arrive, since each bypasses a
     # different check: the bare name, an absolute path (basenamed by argv0_of,
     # and the only form that works here because ~/.local/bin is not on PATH),
     # behind a wrapper, inside a substitution, and behind an env prefix.
-    ("ask",    "orchestrator whoami"),
+    #
+    # The canary is `submit`, not `whoami`. It was whoami while orchestrator
+    # asked on every subcommand; once whoami became a proven read these stopped
+    # testing argv0 resolution and started testing the exemption, silently. A
+    # canary has to be a subcommand that can never be carved out -- submit is
+    # the write the ALWAYS_ASK entry exists for.
     ("ask",    "orchestrator submit --branch users/me/x"),
-    ("ask",    "/opt/local/bin/orchestrator whoami"),
-    ("ask",    "timeout 60 orchestrator whoami"),
-    ("ask",    'echo "$(orchestrator whoami)"'),
-    ("ask",    "A=1 orchestrator whoami"),
-    ("ask",    "ls -la && orchestrator whoami"),
+    ("ask",    "/opt/local/bin/orchestrator submit HEAD"),
+    ("ask",    "timeout 60 orchestrator submit HEAD"),
+    ("ask",    'echo "$(orchestrator submit HEAD)"'),
+    ("ask",    "A=1 orchestrator submit HEAD"),
+    ("ask",    "ls -la && orchestrator submit HEAD"),
     ("silent", "grep -n orchestrator f"),   # an argument is just an argument
     # The one exemption: subcommands read out of the client source and shown to
     # be a GET. "silent" not "allow" because no rule names orchestrator -- a
@@ -897,8 +1016,52 @@ CASES = [
 # an allowlisted tool through data the guard cannot read. Closing one makes the
 # assertion below fail -- that is the reminder to move it into CASES.
 GAPS = [
-    # Empty. Both original entries were closed by expanding literal loop words
-    # and by treating an argument that begins with an expansion as opaque.
-    # Keep the list and its handling: the next gap wants writing down, not
-    # rediscovering.
+    # A token whose ENTIRE content is ';' loses its quoting in tokenize(), so
+    # split_segments treats `x ';' y` and `x \; y` as two commands where bash
+    # passes ';' to x as a literal argument. (`echo 'a ; b'` is unaffected --
+    # the span has other characters in it.)
+    #
+    # It matters for two real spellings: `tmux ls \; new-session -d '<cmd>'`,
+    # which chains a second tmux command onto a vouched one, and the `\;` that
+    # terminates `find -exec`. The guard invents a phantom segment from the
+    # tail, so it answers "silent" here rather than naming the write.
+    #
+    # Left open deliberately: the error runs in the SAFE direction, because the
+    # phantom segment (`new-session ...`) matches no rule and the rules prompt
+    # on it. Closing it means teaching tokenize() to mark a quoted operator as
+    # a literal, which changes how every `find -exec` is read -- too wide to
+    # carry on the side of a tmux change. Pinned at today's behaviour so that
+    # fixing the tokenizer fails this case and says so.
+    ("silent", "tmux ls ';' new-session -d 'rm -rf /data'"),
+]
+
+
+# why-prompt.py's cases: (label, segment, env, expected paths outside TEST_ROOTS).
+#
+# The workspace gate is checked against the RESOLVED path, so a token that is
+# only a path after a variable expands still has to be reported. Reading argv
+# alone finds nothing there, and why-prompt.py answered "no prompt expected" for
+# a command that prompted every time -- which got blamed on a stale session
+# twice before the env block was consulted.
+#
+# The guard is deliberately NOT changed to match. Expanding these there would
+# make it vouch for the path and emit "allow", which BYPASSES the very gate that
+# is doing its job. Diagnosis wants the wider view; the grant does not.
+WHY_PROMPT_CASES = [
+    ("literal path outside",
+     ["ls", "-l", "/elsewhere/f"], {}, ["/elsewhere/f"]),
+    ("literal path inside",
+     ["ls", "-l", "/workspace/f"], {}, []),
+    ("env var resolving outside",
+     ["ls", "-l", "$SOCK"], {"SOCK": "/elsewhere/.ssh/sock"},
+     ["/elsewhere/.ssh/sock"]),
+    ("env var in braces",
+     ["ls", "-l", "${SOCK}"], {"SOCK": "/elsewhere/.ssh/sock"},
+     ["/elsewhere/.ssh/sock"]),
+    ("env var resolving inside",
+     ["ls", "-l", "$SOCK"], {"SOCK": "/workspace/sock"}, []),
+    # An unknown name stays as written: reporting a path the command does not
+    # touch is worse than reporting none.
+    ("unknown var is not guessed at",
+     ["ls", "-l", "$MYSTERY"], {}, []),
 ]

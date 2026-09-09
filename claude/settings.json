@@ -40,6 +40,8 @@
       "Bash(git shortlog:*)",
       "Bash(git worktree list:*)",
       "Bash(printf:*)",
+      "Bash(ps:*)",
+      "Bash(ssh:*)",
       "Bash(printenv:*)",
       "Bash(hostname:*)",
       "Bash(uptime:*)",
@@ -70,6 +72,7 @@
       "Bash(git config:*)",
       "Bash(git remote:*)",
       "Bash(git ls-remote:*)",
+      "Bash(git check-ignore:*)",
       "Bash(~/.claude/tools/why-prompt.py:*)",
       "Bash(~/.claude/tools/guard-verdict.py:*)",
       "Bash(~/.claude/tools/check-settings.py:*)",
@@ -83,10 +86,15 @@
       "Bash(~/.claude/tools/transcript_cost.py:*)",
       "Bash(command -v:*)",
       "Bash(command -V:*)",
+      "Bash(namei:*)",
       "Bash(realpath:*)",
       "Bash(basename:*)",
       "Bash(dirname:*)",
       "Bash(file:*)"
+    ],
+    "ask": [
+      "Edit(~/.claude/projects/**/memory/**)",
+      "Write(~/.claude/projects/**/memory/**)"
     ]
   },
   "worktree": {
