@@ -1065,3 +1065,65 @@ WHY_PROMPT_CASES = [
     ("unknown var is not guessed at",
      ["ls", "-l", "$MYSTERY"], {}, []),
 ]
+
+
+# why-prompted.py's cases: (label, transcript lines, needle, expected records).
+#
+# A separate tool from why-prompt.py because the two answer different questions.
+# why-prompt.py predicts against TODAY's config; this reports what a session
+# actually decided, from the record. The distinction stopped mattering in theory
+# and started mattering in practice the day a guard crash (a TypeError from a
+# half-applied edit) made a command prompt, and the repaired guard then cleared
+# the same command -- so the prediction was right about now and wrong about then.
+#
+# Each record is (decision, reason, waited). `waited` is the tool_use -> result
+# gap in seconds, which is a wait for a human only when the decision was "ask";
+# otherwise it is just how long the command took.
+_WP_USE = ('{"type":"assistant","timestamp":"%s","message":{"content":'
+           '[{"type":"tool_use","id":"%s","name":"Bash",'
+           '"input":{"command":%s}}]}}')
+_WP_RESULT = ('{"type":"user","timestamp":"%s","message":{"content":'
+              '[{"type":"tool_result","tool_use_id":"%s"}]}}')
+_WP_HOOK = ('{"type":"attachment","timestamp":"%s","attachment":'
+            '{"hookName":"PreToolUse:Bash","toolUseID":"%s",'
+            '"stdout":"{\\"hookSpecificOutput\\": {\\"permissionDecision\\": '
+            '\\"%s\\", \\"permissionDecisionReason\\": \\"%s\\"}}"}}')
+
+WHY_PROMPTED_CASES = [
+    # The case the tool exists for: the hook recorded WHY it asked.
+    ("hook ask is reported with its reason",
+     [_WP_USE % ("2026-01-01T00:00:00.000Z", "t1", '"ls /tmp"'),
+      _WP_HOOK % ("2026-01-01T00:00:00.100Z", "t1", "ask", "guard says no"),
+      _WP_RESULT % ("2026-01-01T00:02:00.000Z", "t1")],
+     "ls /tmp", [("ask", "guard says no", 120.0)]),
+    # No hook line at all is NOT the same as an allow, and saying "allowed"
+    # there would invent a record. Older transcripts simply do not carry one.
+    ("missing hook record is reported as unknown",
+     [_WP_USE % ("2026-01-01T00:00:00.000Z", "t2", '"ls /tmp"'),
+      _WP_RESULT % ("2026-01-01T00:00:00.500Z", "t2")],
+     "ls /tmp", [(None, None, 0.5)]),
+    # A command that never finished has no result line, so there is no elapsed
+    # time to report -- distinct from an elapsed time of zero.
+    ("no result line leaves the wait unknown",
+     [_WP_USE % ("2026-01-01T00:00:00.000Z", "t3", '"ls /tmp"'),
+      _WP_HOOK % ("2026-01-01T00:00:00.100Z", "t3", "ask", "guard says no")],
+     "ls /tmp", [("ask", "guard says no", None)]),
+    # Matching is on the command text, so a fragment finds the whole command.
+    # Anything else would need the caller to retype a multi-line command
+    # exactly, which is the transcription trap this tool is meant to end.
+    ("a fragment matches",
+     [_WP_USE % ("2026-01-01T00:00:00.000Z", "t4", '"grep -rn foo bar | head"'),
+      _WP_HOOK % ("2026-01-01T00:00:00.100Z", "t4", "allow", "fine")],
+     "grep -rn foo", [("allow", "fine", None)]),
+    ("a non-match finds nothing",
+     [_WP_USE % ("2026-01-01T00:00:00.000Z", "t5", '"ls /tmp"'),
+      _WP_HOOK % ("2026-01-01T00:00:00.100Z", "t5", "allow", "fine")],
+     "something else", []),
+    # A malformed line must not take the scan down with it: transcripts are
+    # appended to live, so the last line can be a partial write.
+    ("a truncated line is skipped",
+     ['{"type":"assistant","timestamp":"2026-01-01T00:00',
+      _WP_USE % ("2026-01-01T00:00:00.000Z", "t6", '"ls /tmp"'),
+      _WP_HOOK % ("2026-01-01T00:00:00.100Z", "t6", "ask", "guard says no")],
+     "ls /tmp", [("ask", "guard says no", None)]),
+]

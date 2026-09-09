@@ -37,6 +37,7 @@ FILES = [
     "hooks/bash-write-guard-tables.py",
     "hooks/unguarded-worktrees",
     "tools/why-prompt.py",
+    "tools/why-prompted.py",
     "tools/guard-verdict.py",
     "tools/check-settings.py",
     "tools/transcript_cost.py",
