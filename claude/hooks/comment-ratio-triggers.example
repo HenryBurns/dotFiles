@@ -1,0 +1,10 @@
+# Extra commands that put comments in front of a reviewer, one extended regex
+# per line, matched against the Bash command. `git commit` is built into
+# comment-ratio-gate.py and does not belong here.
+#
+# Copy to `comment-ratio-triggers` and add your own. That name is gitignored:
+# a review-posting command names an employer's toolchain, and this hook is
+# published.
+#
+# \bgh\s+pr\s+create\b
+# \barc\s+diff\b

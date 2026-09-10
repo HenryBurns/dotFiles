@@ -36,6 +36,16 @@ RUFF_OUTPUT_FLAGS = {"-o", "--output-file"}
 # form of the magic file and writes nothing.
 FILE_COMPILE_FLAGS = {"-C", "--compile"}
 
+# Interpreter flags that cannot introduce code and cannot outlive the script:
+# they tune bytecode writing, buffering, site imports and optimization. Clusters
+# are allowed, so `-uB` is read letter by letter.
+#
+# Everything absent refuses, and four in particular must: -c takes code, -m
+# takes a module, -i keeps the interpreter alive after the script, and a bare
+# `-` reads the program from stdin. -W and -X are absent only because they take
+# values, which is enough reason not to guess.
+PYTHON_SAFE_FLAG_LETTERS = set("BEIOPSbdqsuvx")
+
 # `date` prints, except `-s` and the bare `MMDDhhmm` operand of its second usage
 # form, which set the system clock. Read flags are allowlisted rather than -s
 # refused because short options cluster: `-Is` is -I carrying its optional

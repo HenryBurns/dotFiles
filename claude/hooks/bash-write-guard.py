@@ -175,7 +175,8 @@ ALWAYS_ASK = {
 #
 # Adding a vouching function to an ALWAYS_ASK entry usually means adding it
 # here too. The exception is a form a rule CAN name, like `Bash(command -v:*)`.
-VOUCHED_NOT_RULED = frozenset({"set", "ssh", "tmux", "date"})
+VOUCHED_NOT_RULED = frozenset({"set", "ssh", "tmux", "date",
+                               "python", "python3"})
 
 # ---------------------------------------------------------------------------
 # Control-flow recognition
@@ -348,6 +349,56 @@ def ssh_vouched(args, depth, rules):
     # another machine, and applying it there would either reject ordinary
     # remote paths or, worse, accept one for looking local.
     permitted, _ = analyze(remote, prefix, deny, depth + 1, ())
+    return permitted
+
+
+def python_script_argv(args):
+    """`python <args>` reduced to the script's own argv, or None.
+
+    None whenever no FILE is named -- -c, -m, a bare interpreter, a program on
+    stdin -- because then there is nothing an allow rule could ever cover.
+
+    The script must be absolute or ~-rooted. A relative path is refused not for
+    being suspicious but because the guard does not track `cd`: it would resolve
+    the name against the hook's own directory, which is not where bash will look.
+    """
+    index = 0
+    for index, arg in enumerate(args):                      # noqa: B007
+        if arg == "--":
+            index += 1
+            break
+        if not arg.startswith("-") or arg == "-":
+            break
+        letters = arg[1:]
+        if not all(c in T.PYTHON_SAFE_FLAG_LETTERS for c in letters):
+            return None
+    else:
+        return None                                         # flags only, no file
+    rest = list(args[index:])
+    if not rest or not (rest[0].startswith("/") or rest[0].startswith("~/")):
+        return None
+    return rest
+
+
+def python_vouched(args, depth, rules):
+    """True if `python <args>` only runs a script that is already allowlisted.
+
+    The interpreter is judged by what it is pointed at: the script's argv is
+    handed to the same two checks a bare invocation would face, so a grant or a
+    `Bash(<script>:*)` rule covers both spellings and neither is special-cased.
+
+    Passed as a LIST rather than rejoined into a string, which would re-split a
+    quoted argument and re-read a literal `>` as a redirect.
+    """
+    if rules is None or depth > MAX_SUBST_DEPTH:
+        return False
+    argv = python_script_argv(args)
+    if argv is None:
+        return False
+    if segment_reasons(argv, frozenset(), depth + 1, rules):
+        return False
+    prefix, deny = rules
+    permitted, _ = segment_permitted(argv, prefix, deny)
     return permitted
 
 
@@ -1265,6 +1316,11 @@ ASK_EXEMPTIONS = {
     "ssh": ssh_vouched,
     "tmux": lambda rest, depth, rules: tmux_reads(rest),
     "date": lambda rest, depth, rules: date_reads(rest),
+    # An interpreter pointed at an allowlisted file adds nothing the guard
+    # cannot already see. Same shape as ssh: reduce to the inner argv, then
+    # require it to pass on its own.
+    "python": python_vouched,
+    "python3": python_vouched,
 }
 
 

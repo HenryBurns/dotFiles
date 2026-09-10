@@ -6,6 +6,7 @@
 # --- Claude Code: the deliberately-local half -------------------------------
 # Site-specific grants and internal test names. See claude/README.md.
 claude/hooks/local_grants.py
+claude/hooks/comment-ratio-triggers
 claude/hooks/allowed-blueprints
 # Session state, transcripts, command history, OAuth credentials.
 claude/.credentials.json

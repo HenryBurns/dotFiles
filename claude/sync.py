@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Export the portable parts of ~/.claude into this repo.
 
-    python3 claude/sync.py           # refresh the repo from live config
-    python3 claude/sync.py --check   # report drift, write nothing (for CI)
+    claude/sync.py           # refresh the repo from live config
+    claude/sync.py --check   # report drift, write nothing (for CI)
+
+Run it directly, not as `python3 claude/sync.py`: the write guard asks on
+python3, since it cannot tell which script an interpreter is about to run.
 
 Pulls from the real ~/.claude/settings.json rather than a hand-maintained copy,
 so the repo cannot drift from what is actually in use. Everything specific to a
@@ -36,15 +39,25 @@ FILES = [
     "hooks/bash-write-guard-cases.py",
     "hooks/bash-write-guard-tables.py",
     "hooks/unguarded-worktrees",
+    "hooks/comment-ratio-gate.py",
+    "hooks/commit-message-gate.py",
+    "hooks/review-text-gate.py",
+    "hooks/hook_triggers.py",
+    # The gate's own trigger list names an employer's review tooling, so only
+    # the example ships; `comment-ratio-triggers` is gitignored.
+    "hooks/comment-ratio-triggers.example",
     "tools/why-prompt.py",
     "tools/why-prompted.py",
     "tools/guard-verdict.py",
     "tools/check-settings.py",
     "tools/transcript_cost.py",
     "tools/comment-ratio.py",
-    # The only portable skill. The rest of ~/.claude/skills is workplace
-    # tooling, so skills are published one path at a time, never as a tree.
+    # The portable skills. The rest of ~/.claude/skills is workplace tooling,
+    # so skills are published one path at a time, never as a tree -- and each
+    # one is read before it is listed here. A keyword scan cannot tell that a
+    # convention is company-specific, only that a name is.
     "skills/write-guard/SKILL.md",
+    "skills/code-review-practice/SKILL.md",
 ]
 
 # Named so the omission is a decision on the record, not an oversight.
@@ -55,8 +68,8 @@ SKIP = {
     "tools/share-perms.sh": "bundles the two files above",
     "tools/subcommand-tools.local": "internal tool names; transcript_cost.py "
                                     "reads it and works without it",
-    "skills/ (except write-guard)": "workplace build, test, ticket and review "
-                                    "conventions",
+    "skills/ (except those in FILES)": "workplace build, test, ticket and "
+                                       "review conventions",
     ".credentials.json": "OAuth credentials -- never leaves the machine",
     "history.jsonl": "every command run, verbatim",
     "projects/": "full session transcripts and per-project memory",

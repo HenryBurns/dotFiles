@@ -27,6 +27,9 @@ TEST_RULES = [(pattern, "test") for pattern in (
     "git shortlog", "git archive", "git bundle", "git format-patch",
     "ruff", "realpath", "basename", "dirname", "file", "readlink",
     "command -v", "command -V", "ps",
+    # Stands in for an allowlisted script, so the python3 cases can test the
+    # unwrapping without depending on a local grant (grants are off in --test).
+    "/workspace/tool.py",
 )]
 # No tmux rule, deliberately -- like ssh, a vouched tmux is granted by the hook
 # and an unvouched one is an ask, so a rule would change nothing either way.
@@ -428,6 +431,28 @@ CASES = [
     # A format string is not inert: #(...) runs a shell command, so a read-only
     # subcommand can carry an arbitrary one in its -F argument.
     ("ask",    "tmux ls -F '#(rm -rf /data)'"),
+    # `python3 <script>` is a wrapper around a file, and when that file is
+    # already allowlisted the interpreter adds nothing the guard cannot see.
+    # Unwrapped to the script's own argv and judged as if it had been run
+    # directly -- which is what `Bash(<script>:*)` or a grant already covers.
+    ("allow",  "python3 /workspace/tool.py --check"),
+    ("allow",  "python3 -u -B /workspace/tool.py"),   # flags that only tune I/O
+    ("allow",  "python /workspace/tool.py"),
+    # The script has to BE allowlisted; the interpreter vouches for nothing.
+    ("ask",    "python3 /workspace/unknown.py"),
+    # Forms where no file is named, so there is nothing to allowlist.
+    ("ask",    "python3 -c 'import shutil; shutil.rmtree(\"/x\")'"),
+    ("ask",    "python3 -m http.server"),
+    ("ask",    "python3"),                            # a REPL
+    ("ask",    "python3 -"),                          # program on stdin
+    ("ask",    "python3 -i /workspace/tool.py"),      # REPL after the script
+    # A relative script cannot be resolved: the guard does not track `cd`, so
+    # the path it would check is not the path bash will run.
+    ("ask",    "python3 tool.py --check"),
+    ("ask",    "cd /workspace; python3 tool.py --check"),
+    # The script's own write-capability still applies after unwrapping.
+    ("ask",    "python3 /workspace/tool.py > /etc/f"),
+
     # `date` has two usage forms and the second one WRITES: per `date --help`,
     # `date [-u] [MMDDhhmm[[CC]YY][.ss]]` sets the system clock, as does -s.
     # So a bare operand refuses, and read flags are allowlisted rather than -s

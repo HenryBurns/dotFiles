@@ -79,6 +79,7 @@
       "Bash(~/.claude/tools/guard-verdict.py:*)",
       "Bash(~/.claude/tools/check-settings.py:*)",
       "Bash(~/.claude/hooks/bash-write-guard.py:*)",
+      "Bash(~/.claude/hooks/comment-ratio-gate.py:*)",
       "Bash(git --version:*)",
       "Bash(git version:*)",
       "Bash(git --help:*)",
@@ -111,6 +112,24 @@
             "type": "command",
             "command": "python3 ~/.claude/hooks/bash-write-guard.py",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/comment-ratio-gate.py",
+            "timeout": 30,
+            "statusMessage": "Checking comment density..."
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/commit-message-gate.py",
+            "timeout": 30,
+            "statusMessage": "Checking commit message length..."
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/review-text-gate.py",
+            "timeout": 15,
+            "statusMessage": "Checking review text..."
           }
         ]
       }
