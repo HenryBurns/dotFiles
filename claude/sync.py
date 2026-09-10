@@ -58,6 +58,7 @@ FILES = [
     # convention is company-specific, only that a name is.
     "skills/write-guard/SKILL.md",
     "skills/code-review-practice/SKILL.md",
+    "skills/commit-messages/SKILL.md",
 ]
 
 # Named so the omission is a decision on the record, not an oversight.
