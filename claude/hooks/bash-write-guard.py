@@ -159,6 +159,10 @@ ALWAYS_ASK = {
     "ssh": "runs an arbitrary command on another machine",
     "tmux": "runs an arbitrary command in a server process",
     "date": "sets the system clock with -s or a bare operand",
+    # record writes its samples to a file and stat -o writes its counters, so
+    # the write is the tool's purpose rather than an unusual flag. Here before
+    # any rule names perf, so a later Bash(perf:*) cannot make that silent.
+    "perf": "records profiles to a file",
     # -- privilege escalation ------------------------------------------------
     "sudo": "runs another command as another user",
     "doas": "runs another command as another user",

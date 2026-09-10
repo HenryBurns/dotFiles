@@ -453,6 +453,15 @@ CASES = [
     # The script's own write-capability still applies after unwrapping.
     ("ask",    "python3 /workspace/tool.py > /etc/f"),
 
+    # `perf record` writes its samples to a file -- that is what it is for --
+    # and `perf stat -o` does too. Listed in ALWAYS_ASK before any rule names
+    # perf, so a later `Bash(perf:*)` cannot make the write silent. Without it
+    # the guard found no write reason at all in `perf record -o <file>`.
+    ("ask",    "perf record -F 199 -g -p 123 -o /tmp/prof.data -- sleep 20"),
+    ("ask",    "perf stat -o /tmp/out -- true"),
+    ("ask",    "perf report -i /tmp/prof.data --stdio"),
+    ("ask",    "ssh host 'perf record -o /tmp/x -- sleep 1'"),
+
     # `date` has two usage forms and the second one WRITES: per `date --help`,
     # `date [-u] [MMDDhhmm[[CC]YY][.ss]]` sets the system clock, as does -s.
     # So a bare operand refuses, and read flags are allowlisted rather than -s

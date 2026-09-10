@@ -42,6 +42,7 @@
       "Bash(printf:*)",
       "Bash(ps:*)",
       "Bash(lsof:*)",
+      "Bash(top:*)",
       "Bash(ssh:*)",
       "Bash(printenv:*)",
       "Bash(hostname:*)",
