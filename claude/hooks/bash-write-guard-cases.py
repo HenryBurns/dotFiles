@@ -428,6 +428,19 @@ CASES = [
     # A format string is not inert: #(...) runs a shell command, so a read-only
     # subcommand can carry an arbitrary one in its -F argument.
     ("ask",    "tmux ls -F '#(rm -rf /data)'"),
+    # `date` has two usage forms and the second one WRITES: per `date --help`,
+    # `date [-u] [MMDDhhmm[[CC]YY][.ss]]` sets the system clock, as does -s.
+    # So a bare operand refuses, and read flags are allowlisted rather than -s
+    # refused -- short options cluster, and `-Is` is -I carrying its optional
+    # argument, not -I -s.
+    ("allow",  "date -Is"),
+    ("allow",  "date +%s"),
+    ("allow",  "date -u -R"),
+    ("allow",  "date -d '2 hours ago' +%H"),
+    ("ask",    "date -s '2020-01-01 00:00:00'"),
+    ("ask",    "date --set=@0"),
+    ("ask",    "date 202001010000"),
+    ("ask",    "date --frobnicate"),          # unknown flag may take a value
     # (The ';' chaining form is a tokenizer gap, pinned in GAPS below.)
     # -f sources a config file, whose contents are tmux commands; -c runs a
     # shell command outright. Both act before any subcommand is reached.

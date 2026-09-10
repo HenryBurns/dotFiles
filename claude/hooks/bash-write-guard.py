@@ -158,12 +158,24 @@ ALWAYS_ASK = {
     # `Bash(ssh:*)` rule survivable, since an ask beats any rule.
     "ssh": "runs an arbitrary command on another machine",
     "tmux": "runs an arbitrary command in a server process",
+    "date": "sets the system clock with -s or a bare operand",
     # -- privilege escalation ------------------------------------------------
     "sudo": "runs another command as another user",
     "doas": "runs another command as another user",
     "su": "runs another command as another user",
     "runuser": "runs another command as another user",
 }
+
+# Commands analyze() grants on its own rather than passing to the rules. Each
+# was already vouched for upstream -- segment_reasons cleared the ALWAYS_ASK
+# entries above, set_is_noop clears `set` -- and no prefix rule can express what
+# was checked: which ssh flags, which tmux subcommand, which date form, which
+# `set -o`. Leaving them to the rules would withdraw the grant from everything
+# beside them in the compound.
+#
+# Adding a vouching function to an ALWAYS_ASK entry usually means adding it
+# here too. The exception is a form a rule CAN name, like `Bash(command -v:*)`.
+VOUCHED_NOT_RULED = frozenset({"set", "ssh", "tmux", "date"})
 
 # ---------------------------------------------------------------------------
 # Control-flow recognition
@@ -374,6 +386,32 @@ def tmux_reads(args):
     # ';' ends the vouched command and starts an unvouched one; a format may
     # carry a shell command into even the safest subcommand.
     return not any(a == ";" or T.TMUX_FORMAT_EXEC in a for a in sub_args)
+
+
+def date_reads(args):
+    """True if `date <args>` only prints. ALWAYS_ASK's date exemption.
+
+    A bare operand is refused because date's second usage form, `date [-u]
+    [MMDDhhmm[[CC]YY][.ss]]`, sets the clock -- only a `+FORMAT` may be
+    positional. Unknown flags refuse too, since one taking a value would
+    otherwise let the operand behind it pass as a flag's argument.
+    """
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg.startswith("+"):
+            index += 1
+            continue                       # +FORMAT
+        if arg in T.DATE_VALUE_FLAGS:
+            if index + 1 >= len(args):
+                return False               # value missing: unparseable
+            index += 2
+            continue
+        if arg in T.DATE_BOOL_FLAGS or arg.startswith(T.DATE_ATTACHED_PREFIXES):
+            index += 1
+            continue
+        return False                       # -s, an unknown flag, or an operand
+    return True
 
 
 def command_is_lookup(args):
@@ -1207,6 +1245,29 @@ def git_config_writes(args):
     return len(positionals) >= 2
 
 
+# The ALWAYS_ASK entries that have a read-only form, and the predicate that
+# recognizes it. One uniform (rest, depth, rules) signature so segment_reasons
+# needs no per-tool branch; only ssh recurses, and it is why depth and rules are
+# threaded this far.
+#
+# Defined here rather than beside ALWAYS_ASK because it holds function
+# references, which have to exist first. Compare VOUCHED_NOT_RULED, which is the
+# separate question of whether a rule could express the same thing.
+ASK_EXEMPTIONS = {
+    # Every file tee writes is named in argv, so when all of them are scratchpad
+    # paths it is no more of a write than a redirect into that directory.
+    "tee": lambda rest, depth, rules: sandboxed_targets(tee_targets(rest) or []),
+    "orchestrator": lambda rest, depth, rules: orchestrator_reads(rest),
+    "command": lambda rest, depth, rules: command_is_lookup(rest),
+    # Vetted flags AND a write-free remote command. Whether that remote command
+    # is ALLOWLISTED is answered in analyze(), because there is no rule gate on
+    # the far side and write-free alone would pass an unknown remote program.
+    "ssh": ssh_vouched,
+    "tmux": lambda rest, depth, rules: tmux_reads(rest),
+    "date": lambda rest, depth, rules: date_reads(rest),
+}
+
+
 def segment_reasons(segment, literals=frozenset(), depth=0, rules=None):
     """Write-capability reasons for one simple command.
 
@@ -1231,28 +1292,9 @@ def segment_reasons(segment, literals=frozenset(), depth=0, rules=None):
     if name is None:
         return reasons
 
-    # tee is unconditionally in ALWAYS_ASK, but every file it writes is right
-    # there in argv -- so when all of them are scratchpad paths it is no more
-    # of a write than a redirect into the same directory.
-    tee_to_scratch = (name == "tee"
-                      and sandboxed_targets(tee_targets(rest) or []))
-    # Same exemption shape as tee: orchestrator asks on everything except the
-    # subcommands read out of its own source and proven to be reads.
-    orchestrator_read = (name == "orchestrator" and orchestrator_reads(rest))
-    # And again: `command` asks because it runs its argument, except in the
-    # -v/-V forms, which run nothing.
-    command_lookup = (name == "command" and command_is_lookup(rest))
-    # Same shape again, one level deeper: ssh stops asking only when its own
-    # flags are vetted AND the command it carries has no write reason of its
-    # own. Whether that remote command is ALLOWLISTED is a separate question,
-    # answered in analyze() -- there is no rule gate on the far side of an ssh,
-    # so "no write reason" alone would let an unknown remote program through.
-    ssh_read = name == "ssh" and ssh_vouched(rest, depth, rules)
-    # And once more for tmux, which hands a shell command to a server process
-    # the same way ssh hands one to another machine.
-    tmux_read = name == "tmux" and tmux_reads(rest)
-    if (name in ALWAYS_ASK and not tee_to_scratch and not orchestrator_read
-            and not command_lookup and not ssh_read and not tmux_read):
+    exemption = ASK_EXEMPTIONS.get(name)
+    if name in ALWAYS_ASK and not (exemption
+                                   and exemption(rest, depth, rules)):
         reasons.append(f"{name} {ALWAYS_ASK[name]}")
 
     if name == "sed" and any(T.SED_INPLACE.match(t) for t in rest):
@@ -2207,33 +2249,14 @@ def analyze(text, prefix, deny, depth, roots=()):
             return False, False
         if segment[0] in NOOP_BUILTINS:
             continue
-        if segment[0] == "set":
-            if not set_is_noop(segment[1:]):
-                return False, False
-            # Vouched for like control flow: no prefix rule can express a
-            # shell builtin, so leaving this to the rules means `set -o
-            # pipefail` withdraws the grant from everything beside it.
-            needs_grant = True
-            continue
-        # Unlike `set`, a prefix rule CAN express this one -- `Bash(command
-        # -v:*)` -- so the form is verified here and the rules still decide
-        # whether it is allowed.
+        # Two forms still need checking here rather than in segment_reasons,
+        # because neither is write-capable enough for ALWAYS_ASK -- they just
+        # have to BE the read-only spelling before anything is granted.
+        if segment[0] == "set" and not set_is_noop(segment[1:]):
+            return False, False
         if segment[0] == "command" and not command_is_lookup(segment[1:]):
             return False, False
-        # An ssh that reaches here was already vouched for by segment_reasons
-        # above -- flags vetted, remote command write-free and allowlisted --
-        # since anything else produced a reason and returned. All that is left
-        # is to say so: no prefix rule can express any of that, so leaving it
-        # to the rules would withdraw the grant from everything beside it.
-        if segment[0] == "ssh":
-            needs_grant = True
-            continue
-        # tmux for the same reason, and it is worth stating why this is a grant
-        # rather than a rule. `Bash(tmux:*)` cannot say "the reporting
-        # subcommands only" -- and could not be trusted to, since a -F format
-        # smuggles a shell command into even `tmux ls`. The vouching lives here,
-        # so the grant does too, and no tmux rule is needed in settings.json.
-        if segment[0] == "tmux":
+        if segment[0] in VOUCHED_NOT_RULED:
             needs_grant = True
             continue
         permitted, was_local = segment_permitted(segment, prefix, deny)
@@ -2475,6 +2498,18 @@ def _selftest():
             wrapper_errors.append(
                 f"WRAPPERS[{name!r}] must not be unwrapped: it writes, takes a "
                 f"shell string, or changes identity. See the WRAPPERS comment.")
+
+    # ASK_EXEMPTIONS is wired to ALWAYS_ASK by string key, so a typo silently
+    # exempts nothing (or, in VOUCHED_NOT_RULED, grants a name that never
+    # reaches the branch). Both fail safe, and both fail quietly.
+    for name in sorted(set(ASK_EXEMPTIONS) - set(ALWAYS_ASK)):
+        wrapper_errors.append(
+            f"ASK_EXEMPTIONS[{name!r}] names nothing in ALWAYS_ASK, so the "
+            f"exemption is dead. Check the spelling.")
+    for name in sorted(VOUCHED_NOT_RULED - set(ALWAYS_ASK) - {"set"}):
+        wrapper_errors.append(
+            f"VOUCHED_NOT_RULED has {name!r}, which is not in ALWAYS_ASK and "
+            f"so is never vouched for before being granted.")
 
     fail_closed, fail_closed_got = _fail_closed_ok()
     tables_closed, tables_got = _missing_tables_ok()

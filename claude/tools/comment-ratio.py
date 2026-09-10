@@ -273,7 +273,7 @@ def added_lines_by_file(diff_args):
     """Map path -> sorted list of line numbers added, from a -U0 diff."""
     out = git(["diff", "-U0", "-M", "--no-color",
                "--diff-filter=ACMR"] + diff_args)
-    files, path, lineno = {}, None, 0
+    files, path = {}, None
     for line in out.split("\n"):
         if line.startswith("+++ "):
             target = line[4:].strip()

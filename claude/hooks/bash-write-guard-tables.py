@@ -36,6 +36,18 @@ RUFF_OUTPUT_FLAGS = {"-o", "--output-file"}
 # form of the magic file and writes nothing.
 FILE_COMPILE_FLAGS = {"-C", "--compile"}
 
+# `date` prints, except `-s` and the bare `MMDDhhmm` operand of its second usage
+# form, which set the system clock. Read flags are allowlisted rather than -s
+# refused because short options cluster: `-Is` is -I carrying its optional
+# argument, so any "does this cluster contain s" test rejects the commonest
+# read there is.
+DATE_BOOL_FLAGS = {"-R", "-u", "--utc", "--universal", "--rfc-email",
+                   "--debug", "--help", "--version"}
+DATE_VALUE_FLAGS = {"-d", "--date", "-f", "--file", "-r", "--reference"}
+# -I/--iso-8601 and --rfc-3339 carry their argument attached, if at all.
+DATE_ATTACHED_PREFIXES = ("-I", "--iso-8601", "--rfc-3339=", "--date=",
+                          "--file=", "--reference=")
+
 # awk is a language, not a filter: it can redirect and shell out from inside
 # the program text, where shlex has already stripped the quotes that hid it.
 AWK_LIKE = {"awk", "gawk", "mawk", "nawk"}
