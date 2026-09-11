@@ -2575,7 +2575,8 @@ def _selftest():
     tables_closed, tables_got = _missing_tables_ok()
 
     failed = []
-    for group, cases in (("case", fixtures.CASES), ("gap", fixtures.GAPS)):
+    for group, cases in (("case", fixtures.CASES), ("gap", fixtures.GAPS),
+                         ("over-ask", fixtures.OVER_ASKS)):
         for expected, command in cases:
             try:
                 got = _verdict(command, fixtures)
@@ -2584,13 +2585,16 @@ def _selftest():
             if got != expected:
                 failed.append((group, expected, got, command))
 
+    labels = {"gap": "GAP CLOSED?", "over-ask": "OVER-ASK CLOSED?"}
     for group, expected, got, command in failed:
-        label = "GAP CLOSED?" if group == "gap" else "FAIL"
+        label = labels.get(group, "FAIL")
         print(f"{label}  expected {expected}, got {got}\n          {command}")
 
-    total = len(fixtures.CASES) + len(fixtures.GAPS)
+    total = (len(fixtures.CASES) + len(fixtures.GAPS)
+             + len(fixtures.OVER_ASKS))
     print(f"\n{total} cases ({len(fixtures.CASES)} behaviour, "
-          f"{len(fixtures.GAPS)} known gaps), "
+          f"{len(fixtures.GAPS)} known gaps, "
+          f"{len(fixtures.OVER_ASKS)} known over-asks), "
           f"{len(failed)} unexpected")
     for problem in wrapper_errors:
         print(f"WRAPPERS  {problem}")

@@ -28,12 +28,13 @@ Self-test:  ./comment-ratio-gate.py --test
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from hook_triggers import MARKER, acknowledged, triggered  # noqa: E402
+from hook_triggers import MARKER, acknowledged, trigger_match, triggered  # noqa: E402
 
 TOOL = os.path.expanduser("~/.claude/tools/comment-ratio.py")
 
@@ -52,11 +53,27 @@ def target_for(command):
     committed. A plain `git commit` has no commit yet, so the staged diff is
     both the best and the only answer.
     """
+    if re.search(r"\bgit\s+commit(?![\w-])", command):
+        return ["--staged"]
+
+    # Read the revision out of the post itself, not the whole command line. A
+    # compound that merely mentions a revision earlier -- an `echo` naming HEAD,
+    # say -- otherwise measures whatever it mentioned rather than the commit
+    # actually being sent, and blocks on the wrong change.
+    m = trigger_match(command)
+    scope = command[m.end():].split(";")[0].split("|")[0].split("&")[0] if m else command
+
     # A 7+ hex word is a revision; anything shorter collides with ordinary words
     # ("deadbeef" is fine, "add" is not). HEAD is spelled out separately.
-    m = re.search(r"\b(HEAD|[0-9a-f]{7,40})\b", command)
-    if m and not re.search(r"\bgit\s+commit\b", command):
-        return [m.group(1)]
+    try:
+        tokens = shlex.split(scope)
+    except ValueError:
+        tokens = scope.split()
+    for tok in tokens:
+        if tok.startswith("-"):
+            continue
+        if re.fullmatch(r"HEAD|[0-9a-f]{7,40}", tok):
+            return [tok]
     return ["--staged"]
 
 
@@ -143,12 +160,26 @@ def _selftest():
         ("post-review HEAD", ["HEAD"]),
         ("post-review", ["--staged"]),
         ("git add f && git commit --amend", ["--staged"]),
+        # The revision named by the post wins over one mentioned earlier in a
+        # compound, and over a later segment.
+        ('echo "HEAD=x"; post-review c7ad8c929c2a', ["c7ad8c929c2a"]),
+        ("post-review c7ad8c929c2a | tail -20", ["c7ad8c929c2a"]),
+        ("post-review c7ad8c929c2a; echo HEAD", ["c7ad8c929c2a"]),
+        ("post-review --depends-on 1234 c7ad8c929c2a", ["c7ad8c929c2a"]),
     ]
-    for command, want in targets:
-        got = target_for(command)
-        if got != want:
-            print(f"FAIL target_for({command!r}) = {got}, want {want}")
-            bad += 1
+    # The real post trigger names an employer's tooling and lives in the
+    # untracked trigger file, so stand a neutral one in for the duration.
+    import hook_triggers
+    real_load = hook_triggers.load_triggers
+    hook_triggers.load_triggers = lambda: [hook_triggers.GIT_COMMIT, r"\bpost-review\b"]
+    try:
+        for command, want in targets:
+            got = target_for(command)
+            if got != want:
+                print(f"FAIL target_for({command!r}) = {got}, want {want}")
+                bad += 1
+    finally:
+        hook_triggers.load_triggers = real_load
 
     print("all cases pass" if not bad else f"{bad} failure(s)")
     return 1 if bad else 0

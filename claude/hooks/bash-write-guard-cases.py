@@ -1052,6 +1052,9 @@ CASES = [
     ("silent", 'echo "line1\nline2"'),
     ("silent", "grep -c 'a\nb' f"),
     ("allow",  'F=/tmp/x.log\nwc -l \\\n  "$F"'),
+    # The twin of the OVER_ASKS entry: same unresolved $F inside the same
+    # substitution, but wc tolerates an opaque argument where sed cannot.
+    ("allow",  'F=/tmp/x.log; echo "$(wc -l \"$F\")"'),
 ]
 
 # Known gaps, asserted at their CURRENT behavior so they are written down
@@ -1065,6 +1068,28 @@ GAPS = [
     # phantom segment matches no rule and the rules still prompt; closing it
     # changes how every find -exec is read.
     ("silent", "tmux ls ';' new-session -d 'rm -rf /data'"),
+]
+
+# Known OVER-asks, asserted at their current behavior. Nothing here is unsafe --
+# each prompts for something read-only -- but they are pinned for the same
+# reason as GAPS: so the shape is written down rather than rediagnosed, and so
+# closing one is a visible event rather than a silent loosening.
+#
+# Kept apart from GAPS deliberately. A gap is a hole and wants closing; an
+# over-ask is a nuisance, and the tempting "fix" is to relax the check that
+# produced it. Reading them as one list invites trading the first for the
+# second.
+OVER_ASKS = [
+    # find_reasons() analyses each $(...) as standalone text, so the assignment
+    # map built from the outer command never reaches it and `$F` stays opaque
+    # inside. sed is the only reader strict enough to refuse an unresolved
+    # argument -- there it could be `-i` -- so it alone surfaces this; the wc
+    # twin in CASES allows. The same sed resolves fine at top level and inside a
+    # for body, which is what makes this an inconsistency rather than caution.
+    # Fix is to thread the assignments visible in command[:start] into the
+    # recursive call, prefix-only: an assignment written after a substitution
+    # must not apply inside it.
+    ("ask",    'F=/tmp/x.log; echo "$(sed -n 1,5p \"$F\")"'),
 ]
 
 

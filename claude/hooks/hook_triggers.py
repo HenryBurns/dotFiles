@@ -41,14 +41,25 @@ def load_triggers():
     return patterns
 
 
-def triggered(command):
+def trigger_match(command):
+    """The match object of the first trigger that fires, or None.
+
+    Callers need where it matched, not just whether: the revision a post names
+    follows the trigger, and reading one from anywhere in the command measures
+    whatever a compound happened to mention first.
+    """
     for pat in load_triggers():
         try:
-            if re.search(pat, command):
-                return True
+            m = re.search(pat, command)
         except re.error:
             continue
-    return False
+        if m:
+            return m
+    return None
+
+
+def triggered(command):
+    return trigger_match(command) is not None
 
 
 def acknowledged(command):
