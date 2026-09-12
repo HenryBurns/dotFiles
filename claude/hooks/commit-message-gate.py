@@ -11,11 +11,8 @@ and their length is not a choice. The limit comes from the size of the change,
 because a long message on a large refactor is proportionate and a long message
 on a four-line fix is the thing worth catching.
 
-LIMITS was calibrated against 250 commits of real history rather than picked:
-their median body is 3-6 lines at EVERY change size, so the thresholds sit near
-that history's 90th percentile. It is deliberately tighter than the repo's own
-tail -- roughly one commit in ten there would be refused -- because the standard
-being held to is proportionality, not the local average.
+LIMITS was measured, not picked: each ceiling is its band's MEDIAN body length
+over 600 commits, so going over is the exception rather than room to fill.
 
 Fails OPEN, like its sibling: no repo, no message it can see, a crash -- all
 allow. It also cannot see a message typed in an editor, since that is written
@@ -36,7 +33,7 @@ sys.path.insert(0, _HERE)
 from hook_triggers import acknowledged, triggered  # noqa: E402
 
 # (max lines changed, max body lines). Read as: up to this size, that many.
-LIMITS = [(20, 10), (100, 14), (500, 18), (10 ** 9, 28)]
+LIMITS = [(20, 3), (100, 4), (500, 6), (10 ** 9, 7)]
 
 # Required lines whose length is not a stylistic choice, so not counted. A
 # commit standard may mandate Testing:, review tooling stamps Review: and
@@ -47,9 +44,14 @@ TRAILER = re.compile(
 
 
 def body_lines(message):
-    """Content lines after the subject, ignoring blanks and trailers."""
+    """Prose lines after the subject.
+
+    Blanks, trailers and indented blocks do not count: their length is not a
+    choice, and the budget is for prose. Paragraphs here are flush left.
+    """
     lines = message.splitlines()
-    return [ln for ln in lines[1:] if ln.strip() and not TRAILER.match(ln)]
+    return [ln for ln in lines[1:]
+            if ln.strip() and not TRAILER.match(ln) and not ln[:1].isspace()]
 
 
 def limit_for(changed):
@@ -199,17 +201,26 @@ def _selftest():
             print(f"FAIL {label}: {got!r} != {want!r}")
             bad += 1
 
-    check("limit tiny", limit_for(1), 10)
-    check("limit 20", limit_for(20), 10)
-    check("limit 21", limit_for(21), 14)
-    check("limit 500", limit_for(500), 18)
-    check("limit huge", limit_for(50000), 28)
+    check("limit tiny", limit_for(1), 3)
+    check("limit 20", limit_for(20), 3)
+    check("limit 21", limit_for(21), 4)
+    check("limit 500", limit_for(500), 6)
+    check("limit huge", limit_for(50000), 7)
 
     msg = ("TICKET-1 Subject line\n\nOne body line.\nAnother.\n\n"
            "Testing: ran it\nJIRA: TICKET-1\n"
            "Co-Authored-By: Someone <x@y>\n")
     check("body excludes trailers", len(body_lines(msg)), 2)
     check("subject not counted", body_lines(msg)[0], "One body line.")
+
+    # A pasted invocation and its output is kept at whatever length the command
+    # is, so only the prose around it counts.
+    transcript = ("TICKET-1 Subject line\n\nProse before.\n\n"
+                  "  $ some-tool --action thing \\\n"
+                  "        --flag value\n"
+                  "  some-tool: nothing written\n\n"
+                  "Prose after.\n\nTesting: ran it\n")
+    check("indented block excluded", len(body_lines(transcript)), 2)
 
     check("-m parsed", message_from_command('git commit -m "S" -m "B"', "."),
           "S\n\nB")

@@ -362,9 +362,7 @@ def python_script_argv(args):
     None whenever no FILE is named -- -c, -m, a bare interpreter, a program on
     stdin -- because then there is nothing an allow rule could ever cover.
 
-    The script must be absolute or ~-rooted. A relative path is refused not for
-    being suspicious but because the guard does not track `cd`: it would resolve
-    the name against the hook's own directory, which is not where bash will look.
+    expand_cd resolves what it can; unexpandable paths still ask.
     """
     index = 0
     for index, arg in enumerate(args):                      # noqa: B007
@@ -1806,6 +1804,111 @@ def unwrap_wrappers(tokens):
     return out, changed
 
 
+# Operators that put the command beside them in a subshell, so a `cd` there
+# moves a child and not the shell we are tracking. `&` is both: it backgrounds
+# the command AND ends the statement.
+SUBSHELL_OPERATORS = frozenset({"|", "|&", "&"})
+INTERPRETERS = frozenset({"python", "python3"})
+# Where a statement ends and a subshell's cwd is therefore discarded. The
+# control keywords are included so a pipe in an `if` condition cannot leak into
+# the body.
+STATEMENT_ENDS = frozenset({";", "&&", "||", "&"}) | CONTROL_KEYWORDS
+
+
+def trackable_cd(target):
+    """True if `cd <target>` moves somewhere the guard can name with certainty.
+
+    Absolute and literal only, for the same reason in_sandbox is: a relative
+    target depends on a cwd we may already have lost, and a glob or an
+    expansion is not a directory anyone has read. Everything else marks the cwd
+    unknown, which is the safe answer -- an unknown cwd resolves nothing.
+    """
+    if not target.startswith("/"):
+        return False
+    if "$" in target or SUBST_PLACEHOLDER in target:
+        return False
+    return not any(char in target for char in "*?[{")
+
+
+def relative_command(token):
+    """True for a command word that names a file relative to the cwd.
+
+    Must contain a `/`: a bare `tool.py` is a PATH lookup, not a relative path.
+    """
+    if "/" not in token or token.startswith(("/", "~")):
+        return False
+    return "$" not in token and SUBST_PLACEHOLDER not in token
+
+
+def expand_cd(tokens):
+    """(tokens, changed) with relative command words resolved against `cd`.
+
+    Command words and an interpreter's script only: resolving argument paths
+    would let in_sandbox prove a relative write target disposable.
+    """
+    out, cwd, changed = [], None, False
+    expect_command, index, total = True, 0, len(tokens)
+    # A cd in a pipeline or background runs in a subshell, so it is undone at
+    # the statement end: `cd /a; b | cd /c; ./d` resolves ./d against /a.
+    statement_cwd, statement_piped, pending_script = None, False, False
+
+    while index < total:
+        token = tokens[index]
+
+        if expect_command and token == "cd":
+            target = tokens[index + 1] if index + 1 < total else None
+            after = tokens[index + 2] if index + 2 < total else None
+            # A third word means this is not the plain `cd DIR` we can read
+            # (`cd -L x y` is an error, but guessing is still wrong).
+            simple = after is None or after in OPERATORS or after in GROUPING
+            cwd = (os.path.normpath(target)
+                   if target and simple and trackable_cd(target) else None)
+            out.append(token)
+            expect_command = False
+            index += 1
+            continue
+
+        # `F=/tmp/x cmd` -- an assignment prefix holds a command position but is
+        # not the command, and it is a `/`-bearing word, so rewriting it turned
+        # the assignment itself into a path. The position stays open.
+        if expect_command and ASSIGNMENT.match(token):
+            out.append(token)
+            index += 1
+            continue
+
+        if expect_command and cwd and relative_command(token):
+            out.append(os.path.normpath(os.path.join(cwd, token)))
+            changed = True
+            expect_command = False
+            pending_script = False
+            index += 1
+            continue
+
+        if pending_script and cwd and relative_command(token):
+            out.append(os.path.normpath(os.path.join(cwd, token)))
+            changed = True
+            pending_script = False
+            index += 1
+            continue
+
+        if token in SUBSHELL_OPERATORS:
+            statement_piped = True
+        if token in STATEMENT_ENDS:
+            if statement_piped:
+                cwd = statement_cwd
+            statement_cwd, statement_piped = cwd, False
+
+        expect_command = (token in OPERATORS or token in CONTROL_KEYWORDS
+                          or token in GROUPING)
+        if expect_command:
+            pending_script = False
+        elif token in INTERPRETERS:
+            pending_script = True
+        out.append(token)
+        index += 1
+    return out, changed
+
+
 def expand(tokens):
     """(tokens, changed) with assignments and literal loops substituted in.
 
@@ -1815,7 +1918,10 @@ def expand(tokens):
     tokens, substituted = expand_assignments(tokens)
     tokens, unrolled = expand_loops(tokens)
     tokens, unwrapped = unwrap_wrappers(tokens)
-    return tokens, (substituted or unrolled or unwrapped)
+    # Last: the wrappers have to come off first, or the command word seen here
+    # is `timeout`, not the `./tool` behind it.
+    tokens, resolved = expand_cd(tokens)
+    return tokens, (substituted or unrolled or unwrapped or resolved)
 
 
 def _substitute_var(token, name, value):
@@ -1841,6 +1947,15 @@ def find_reasons(command, depth=0, rules=None):
     if depth > MAX_SUBST_DEPTH:
         return list(dict.fromkeys(_flat_reasons(command) + [
             "substitution nested deeper than the guard inspects"]))
+
+    # Before anything else: `$((...))` is not a command substitution, and
+    # reading it as one loses the whole command, not just the arithmetic.
+    resolved = strip_arithmetic(command)
+    if resolved is None:
+        return list(dict.fromkeys(_flat_reasons(command) + [
+            "contains arithmetic the guard cannot read (a name, an array "
+            "subscript, or a substitution inside $((...)))"]))
+    command = resolved
 
     spans = substitution_spans(command)
     if spans is None:
@@ -2143,6 +2258,40 @@ def load_local_grants():
 LOCAL_GRANT = load_local_grants()
 
 
+def resolved_tool(word):
+    """Real path of `word` if it names a file ABSOLUTELY (or via ~), else None.
+
+    A relative path is refused, not resolved: realpath would resolve it against
+    this process's cwd, not the shell's. expand_cd has already rewritten one
+    that an absolute `cd` made knowable.
+    """
+    if not word:
+        return None
+    expanded = os.path.expanduser(word)
+    if not expanded.startswith("/"):
+        return None
+    return os.path.realpath(expanded)
+
+
+_OWN_TOOL_PATHS = None
+
+
+def own_tool_allowed(segment):
+    """True for one of this repo's own read-only tools, named by path."""
+    global _OWN_TOOL_PATHS
+    if not segment:
+        return False
+    resolved = resolved_tool(segment[0])
+    if resolved is None:
+        return False
+    if _OWN_TOOL_PATHS is None:
+        # Resolved on first use, never at module scope: T is loaded in a try
+        # and dereferencing it during import is the documented fail-OPEN bug.
+        _OWN_TOOL_PATHS = frozenset(
+            os.path.realpath(os.path.expanduser(path)) for path in T.OWN_TOOLS)
+    return resolved in _OWN_TOOL_PATHS
+
+
 def segment_permitted(segment, prefix, deny):
     """Is this one command cleared to run? (rule match, or a local grant)"""
     text = " ".join(segment)
@@ -2170,6 +2319,10 @@ def segment_permitted(segment, prefix, deny):
                 # of a match we just made. Recognizing the command and then
                 # withholding that is the one thing this guard must not do.
                 return True, True
+    # Granted, not merely permitted, for the reason given above: the rules did
+    # not match this spelling and will not match it next time either.
+    if own_tool_allowed(segment):
+        return True, True
     if LOCAL_GRANT is not None:
         try:
             if LOCAL_GRANT(segment, GUARD_VIEW):
@@ -2181,6 +2334,78 @@ def segment_permitted(segment, prefix, deny):
 
 SUBST_PLACEHOLDER = "__CLAUDE_SUBST__"
 MAX_SUBST_DEPTH = 2
+
+
+# Numbers and operators ONLY, narrower than bash: a name would make a program
+# name look inert, an array subscript is EVALUATED, and a `$(` in the body runs.
+ARITH_BODY = re.compile(r"^[0-9\s+\-*/%()<>=!&|^~?:,.]+$")
+# A value, not a placeholder: arithmetic yields an integer, which can never be a
+# write flag. A placeholder would make sed refuse an argument it cannot read.
+ARITH_VALUE = "1"
+
+
+def arithmetic_end(text, start):
+    """Index just past the `))` closing the `$((` at `start`, or None.
+
+    Counts parens from the opening pair, so `$(( (a+b)*2 ))` closes at its own
+    end rather than at the first inner `)`.
+    """
+    # start + 1, not + 2: both parens of the opening `((` must be counted, or
+    # the scan closes at the first `)` and reports `$((1+1))` as ending one
+    # character early -- which is the very misparse this exists to prevent.
+    depth, index = 0, start + 1
+    while index < len(text):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+
+def strip_arithmetic(text):
+    """Replace each `$((...))` with an integer, or None to refuse.
+
+    Runs before substitution_spans, which would otherwise read `$((1+1))` as a
+    substitution closing at the FIRST `)`. That left the inner text unbalanced
+    and a stray `)` outside, both of which abort executable_commands -- so the
+    guard fell silent and never saw a write placed after the arithmetic.
+    """
+    if "$((" not in text:
+        return text
+    out, index, quote = [], 0, None
+    while index < len(text):
+        char = text[index]
+        if quote == "'":
+            quote = None if char == "'" else quote
+        elif quote == '"':
+            if char == "\\":
+                out.append(text[index:index + 2])
+                index += 2
+                continue
+            if char == '"':
+                quote = None
+            elif text.startswith("$((", index):
+                end = arithmetic_end(text, index)
+                if end is None or not ARITH_BODY.match(text[index + 3:end - 2]):
+                    return None
+                out.append(ARITH_VALUE)
+                index = end
+                continue
+        elif char in ("'", '"'):
+            quote = char
+        elif text.startswith("$((", index):
+            end = arithmetic_end(text, index)
+            if end is None or not ARITH_BODY.match(text[index + 3:end - 2]):
+                return None
+            out.append(ARITH_VALUE)
+            index = end
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
 
 
 def substitution_spans(text):
@@ -2275,6 +2500,10 @@ def analyze(text, prefix, deny, depth, roots=()):
     so a substitution's only new risk is the commands inside its parens.
     """
     if depth > MAX_SUBST_DEPTH:
+        return False, False
+
+    text = strip_arithmetic(text)
+    if text is None:
         return False, False
 
     spans = substitution_spans(text)

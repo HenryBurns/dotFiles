@@ -11,6 +11,23 @@ letting the allow rules decide alone. Nothing in this file imports the guard.
 
 import re
 
+# This repo's own read-only tools, granted by path: the settings rules spell
+# them with `~`, and a prefix rule is literal text, so the absolute spelling
+# matches nothing. The guard resolves these. A name that cannot be published
+# belongs in local_grants.py instead.
+OWN_TOOLS = frozenset({
+    "~/.claude/hooks/bash-write-guard.py",
+    "~/.claude/hooks/comment-ratio-gate.py",
+    "~/.claude/hooks/commit-message-gate.py",
+    "~/.claude/hooks/review-text-gate.py",
+    "~/.claude/tools/why-prompt.py",
+    "~/.claude/tools/why-prompted.py",
+    "~/.claude/tools/guard-verdict.py",
+    "~/.claude/tools/check-settings.py",
+    "~/.claude/tools/comment-ratio.py",
+    "~/.claude/tools/transcript_cost.py",
+})
+
 FIND_WRITE_FLAGS = {
     "-exec", "-execdir", "-delete", "-ok", "-okdir",
     "-fprintf", "-fls", "-fprint", "-fprint0",

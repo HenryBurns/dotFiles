@@ -34,16 +34,19 @@ reader would otherwise object to the approach.
 
 This is the rule that fails most often, so it is worth stating as a number rather than a feeling.
 
-Measured over 250 commits of real history, the median body is **3–6 lines at every change size** —
-the local norm barely grows with the diff. `commit-message-gate.py` in this repo enforces a ceiling
-near that history's 90th percentile:
+Measured over 600 commits of real history, the median body is **3–7 lines at every change size** —
+the local norm barely grows with the diff. `commit-message-gate.py` refuses anything above that
+median, so the ceiling is the ordinary length rather than the generous one:
 
-| Lines changed | Aim for | Refused above |
-|---|---|---|
-| ≤ 20 | ≤ 5 | 10 |
-| 21–100 | ~5 | 14 |
-| 101–500 | ~10 | 18 |
-| 501+ | ~15 | 28 |
+| Lines changed | Body lines |
+|---|---|
+| ≤ 20 | 3 |
+| 21–100 | 4 |
+| 101–500 | 6 |
+| 501+ | 7 |
+
+Half of real commits already fit. Going over is the exception, not the room to fill — and when a
+change genuinely needs more, the gate is overridden deliberately rather than the budget raised.
 
 Body means content lines after the subject: blanks and trailers do not count, since their length is
 not a choice. Calibrate against your own history rather than adopting these numbers on faith — the

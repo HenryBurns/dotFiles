@@ -45,6 +45,38 @@ TOOL = os.path.expanduser("~/.claude/tools/comment-ratio.py")
 # starts refusing accepted work, which is how a gate gets disabled.
 MAX_MULTIPLE = "2.5"
 
+# The multiple is relative, so a comment-dense file licenses a comment-dense
+# change: at a 0.35 baseline, 2.5x permits 87% comments. This is the ceiling no
+# baseline excuses.
+MAX_RATIO = 0.45
+
+# ...but only once the change is big enough for a ratio to mean anything. A
+# 5-line fix carrying 7 lines of reason is 58% comments and entirely correct.
+MIN_RATED_LINES = 40
+
+# The tool's totals row: FILE ADDED CODE CMNT RATIO BASELINE.
+TOTAL_ROW = re.compile(
+    r"^TOTAL\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)%", re.MULTILINE)
+
+
+def ratio_over_ceiling(report):
+    """(over, code, comment) for the absolute cap, or None if unmeasurable.
+
+    Read from the report the tool already produced rather than from a second
+    invocation: the gate runs under a 30s hook timeout and the tool walks git
+    history, so one run is the budget. An unparseable report returns None and
+    the cap simply does not apply -- this is a style gate, and failing open on
+    a format change beats blocking real work.
+    """
+    row = TOTAL_ROW.search(report)
+    if not row:
+        return None
+    code, comment = int(row.group(2)), int(row.group(3))
+    measured = code + comment
+    if measured < MIN_RATED_LINES:
+        return (False, code, comment)
+    return (comment / measured > MAX_RATIO, code, comment)
+
 def target_for(command):
     """What to measure: an explicit revision if the command names one, else staged.
 
@@ -125,12 +157,23 @@ def decide():
     if result is None:
         return 0
     failed, report = result
-    if not failed:
+
+    ceiling = ratio_over_ceiling(report)
+    over_ceiling = bool(ceiling and ceiling[0])
+    if not failed and not over_ceiling:
         return 0
+
+    extra = ""
+    if over_ceiling:
+        _, code, comment = ceiling
+        extra = (f"\n\nOver the absolute ceiling: {comment} comment lines to "
+                 f"{code} of code is past {MAX_RATIO:.0%}, which no baseline "
+                 f"excuses. The file being comment-dense is not a licence to "
+                 f"add more.")
 
     emit_deny(
         "Comment density is over the gate for this change:\n\n"
-        f"{report}\n\n"
+        f"{report}{extra}\n\n"
         "State the conclusion, not the derivation -- cut the sentences a reader "
         "would not act on, then re-run."
     )
@@ -180,6 +223,32 @@ def _selftest():
                 bad += 1
     finally:
         hook_triggers.load_triggers = real_load
+
+    def row(added, code, comment, ratio, baseline="33.6%"):
+        return (f"FILE   ADDED  CODE  CMNT   RATIO  BASELINE\n"
+                f"TOTAL  {added}  {code}  {comment}  {ratio}  {baseline}\n"
+                f"Verdict: HEAVY")
+
+    ceilings = [
+        # Under the floor: a small fix carrying its reason is not a ratio
+        # problem, whatever the percentage says. This is 725d3e0.
+        (row(13, 5, 7, "58.3%"), False),
+        # Over the floor and over the ceiling -- the case the multiple misses,
+        # because a 0.35-baseline file makes 2.5x permit 87%.
+        (row(120, 20, 80, "80.0%"), True),
+        # Over the floor, under the ceiling: the densest accepted work measured.
+        (row(110, 55, 45, "45.0%"), False),
+        # Exactly at the floor, just over the ceiling.
+        (row(45, 17, 23, "57.5%"), True),
+        # No totals row: the cap cannot apply, and must not guess.
+        ("Verdict: HEAVY -- no table here", None),
+    ]
+    for report, want in ceilings:
+        got = ratio_over_ceiling(report)
+        got = None if got is None else got[0]
+        if got != want:
+            print(f"FAIL ratio_over_ceiling(...) = {got}, want {want}")
+            bad += 1
 
     print("all cases pass" if not bad else f"{bad} failure(s)")
     return 1 if bad else 0

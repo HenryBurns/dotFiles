@@ -30,6 +30,10 @@ TEST_RULES = [(pattern, "test") for pattern in (
     # Stands in for an allowlisted script, so the python3 cases can test the
     # unwrapping without depending on a local grant (grants are off in --test).
     "/workspace/tool.py",
+    # Same, but OUTSIDE TEST_ROOTS. The cd cases need this: a grant -- and so
+    # an `allow` -- is only emitted when a path falls outside the roots, so a
+    # script inside /workspace could never show that the cwd was resolved.
+    "/opt/bin/tool.py",
 )]
 # No tmux rule, deliberately -- like ssh, a vouched tmux is granted by the hook
 # and an unvouched one is an ask, so a rule would change nothing either way.
@@ -450,6 +454,14 @@ CASES = [
     # the path it would check is not the path bash will run.
     ("ask",    "python3 tool.py --check"),
     ("ask",    "cd /workspace; python3 tool.py --check"),
+    # An absolute cd makes the script resolvable, so the interpreter is vouched
+    # for the same as a direct run. Only the script position: a value after a
+    # code-running flag is resolved too, but -c is not a safe flag letter, so
+    # python_script_argv still refuses it.
+    ("allow",  "cd /opt/bin; python3 ./tool.py --check"),
+    ("allow",  "cd /opt; python3 bin/tool.py"),
+    ("ask",    "cd /opt/bin; python3 ./unknown.py"),
+    ("ask",    "cd /opt/bin; python3 -c ./tool.py"),
     # The script's own write-capability still applies after unwrapping.
     ("ask",    "python3 /workspace/tool.py > /etc/f"),
 
@@ -582,12 +594,10 @@ CASES = [
     ("ask",    "patch -p1 < d.patch"),
     ("ask",    "python3 -c 'print(1)'"),
     ("ask",    "bash -c 'echo hi'"),
-    # An interpreter always asks, with no exception carved out for our own
-    # tools -- so the diagnostic tools are run directly instead. They keep a
-    # shebang and the executable bit for exactly this reason, and a rule then
-    # clears them. Otherwise why-prompt costs a prompt to explain a prompt.
-    ("ask",    "python3 ~/.claude/tools/why-prompt.py ls"),
-    ("silent", "~/.claude/tools/why-prompt.py ls"),
+    # An interpreter asks unless the script it runs is vouched for; OWN_TOOLS
+    # vouches for these, run directly or through python3.
+    ("allow",  "python3 ~/.claude/tools/why-prompt.py ls"),
+    ("allow",  "~/.claude/tools/why-prompt.py ls"),
 
     # ssh-add changes agent state by DEFAULT, so listing is named and the rest
     # asks -- a bare invocation loads the default identities.
@@ -1055,6 +1065,98 @@ CASES = [
     # The twin of the OVER_ASKS entry: same unresolved $F inside the same
     # substitution, but wc tolerates an opaque argument where sed cannot.
     ("allow",  'F=/tmp/x.log; echo "$(wc -l \"$F\")"'),
+
+    # Arithmetic read as a substitution closing at the first `)` left the parse
+    # broken, so the guard fell silent and a write placed AFTER it ran
+    # unprompted. The same write BEFORE it was caught, which hid this.
+    ("ask",    "echo $((1+1)); sed -i s/a/b/ /workspace/f"),
+    ("ask",    "echo $((1+1)); tee /workspace/f"),
+    ("ask",    "echo $((1+1)); rm -rf /workspace/d"),
+    ("ask",    "sed -i s/a/b/ /workspace/f; echo $((1+1))"),
+    # Arithmetic itself is inert: it yields an integer, so it can never produce
+    # a write flag, and bash does not fall back to a subshell -- `$((echo hi))`
+    # is a syntax error, not a command. Reading a range through it is read-only.
+    ("silent", 'sed -n "1905,$((1905+8))p" /workspace/f'),
+    ("allow",  "wc -l /tmp/f; echo $((1+1))"),
+    ("allow",  'for l in 1905 2003; do sed -n "${l},+8p" /workspace/f; done'),
+    # A body that can RUN something still refuses: $( ) inside arithmetic is
+    # evaluated, and a `[` subscript is evaluated as an expression too.
+    ("ask",    "echo $(( $(id -u) + 1 ))"),
+    ("ask",    "echo $((x[1]+1))"),
+    # `$( (cmd) )` needs the space to be a subshell, so it stays a real
+    # substitution and its commands are still read.
+    ("ask",    "echo $( (tee /workspace/f) )"),
+    # A name asks even here: arithmetic is read before the loop is unrolled, so
+    # `l` is still a name. `,+8p` needs no arithmetic and allows.
+    ("ask",    'for l in 1905 2003; do sed -n "${l},$((l+8))p" /workspace/f; done'),
+    # Single quotes do not expand arithmetic, so it stays literal text.
+    ("silent", "grep -c '$((1+1))' /workspace/f"),
+
+    # An absolute `cd` makes a following relative COMMAND word resolvable, so
+    # an allowlisted script invoked as ./x is recognised as the same script.
+    ("allow",  "cd /opt/bin; ./tool.py --test"),
+    ("allow",  "cd /opt/bin; ./tool.py --test 2>&1 | tail -12"),
+    ("allow",  "cd /opt; ./bin/tool.py --test"),
+    ("allow",  "cd /opt/bin/../bin; ./tool.py --test"),
+    # Nothing to resolve against: no cd at all, or one the guard cannot read.
+    # Each leaves the cwd unknown rather than guessing, so ./tool.py stays
+    # unrecognised and the rules decide alone.
+    ("silent", "./tool.py --test"),
+    ("silent", "cd /opt/bin; cd sub; ./tool.py --test"),
+    ("silent", "cd sub; ./tool.py --test"),
+    ("silent", "cd; ./tool.py --test"),
+    ("silent", "cd ~; ./tool.py --test"),
+    ("silent", "cd -; ./tool.py --test"),
+    ("silent", 'D=/opt/bin; cd "$D/x"; ./tool.py --test'),
+    # A cd in a pipeline runs in a subshell, so it never moved the parent and
+    # must not be honoured -- on either side of the pipe.
+    ("silent", "cd /opt/bin | true; ./tool.py --test"),
+    ("silent", "true | cd /opt/bin; ./tool.py --test"),
+    # But a pipe ELSEWHERE in the line changes no directory, so it must not
+    # discard a cwd already established. Clearing on every `|` cost exactly
+    # this shape: the first command piped into tail, and every later relative
+    # word -- including inside a loop -- stopped resolving.
+    ("allow",  "cd /opt/bin; ./tool.py --test 2>&1 | tail -6; ./tool.py --test"),
+    ("allow",  'cd /opt/bin; ./tool.py -t 2>&1 | tail -6; echo "=="; '
+               'for h in tool tool; do printf "%-4s " "$h"; '
+               './$h.py -t 2>&1 | tail -1; done'),
+    # A cd inside a pipeline is DISCARDED at the statement end rather than
+    # poisoning what follows: the subshell moved, the parent did not, so the
+    # earlier cwd is still the right answer for ./tool.py.
+    ("allow",  "cd /opt/bin; false | cd /tmp; ./tool.py --test"),
+    ("allow",  "cd /opt/bin; true | tail -1; ./tool.py --test"),
+    # Backgrounding is a subshell too, so its cd is discarded the same way.
+    ("silent", "cd /opt/bin & ./tool.py --test"),
+    ("allow",  "cd /opt/bin; true & ./tool.py --test"),
+
+    # The guard's own tooling, granted from the published table rather than
+    # from local_grants.py. These paths ship with this repo, so the grant is
+    # portable -- and being in the guard proper is what makes it testable here,
+    # since local grants are disabled for these cases.
+    ("allow",  "~/.claude/hooks/bash-write-guard.py --test"),
+    ("allow",  "~/.claude/hooks/comment-ratio-gate.py --test"),
+    ("allow",  "~/.claude/hooks/commit-message-gate.py --test"),
+    ("allow",  "~/.claude/hooks/review-text-gate.py --test"),
+    ("allow",  "~/.claude/tools/guard-verdict.py --expect ask"),
+    ("allow",  "~/.claude/tools/check-settings.py"),
+    # A neighbour in the same directory is not covered by the set. The grant is
+    # per file, never per directory.
+    ("silent", "~/.claude/hooks/not-a-real-gate.py --test"),
+    ("silent", "~/.claude/tools/not-a-real-tool.py"),
+    # A write still asks: being our own tool says the file is read-only when
+    # run as intended, not that any command naming it is.
+    ("ask",    "sed -i s/a/b/ ~/.claude/hooks/review-text-gate.py"),
+    # A bare name is a PATH lookup, not a relative path -- rewriting it would
+    # invent a file that bash never looks for.
+    ("silent", "cd /opt/bin; tool.py --test"),
+    # An assignment prefix holds the command position without being the
+    # command. It is also a `/`-bearing word, so resolving it rewrote the
+    # assignment itself into a path and broke the segment.
+    ("allow",  "cd /opt/bin; F=/tmp/x.log ./tool.py --test"),
+    # cd cannot launder a write: resolving the cwd says where the write lands,
+    # never that it is allowed.
+    ("ask",    "cd /opt/bin; sed -i s/a/b/ f"),
+    ("ask",    "cd /opt/bin; ./tool.py --out f > g"),
 ]
 
 # Known gaps, asserted at their CURRENT behavior so they are written down
