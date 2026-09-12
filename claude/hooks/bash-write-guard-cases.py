@@ -1065,6 +1065,9 @@ CASES = [
     # The twin of the OVER_ASKS entry: same unresolved $F inside the same
     # substitution, but wc tolerates an opaque argument where sed cannot.
     ("allow",  'F=/tmp/x.log; echo "$(wc -l \"$F\")"'),
+    # The loop twin: identical but for the loop word being literal, which is
+    # what the binding would have made it had it reached inside.
+    ("allow",  'for j in A B; do printf "%s" "$(git shortlog A)"; done'),
 
     # Arithmetic read as a substitution closing at the first `)` left the parse
     # broken, so the guard fell silent and a write placed AFTER it ran
@@ -1182,16 +1185,12 @@ GAPS = [
 # produced it. Reading them as one list invites trading the first for the
 # second.
 OVER_ASKS = [
-    # find_reasons() analyses each $(...) as standalone text, so the assignment
-    # map built from the outer command never reaches it and `$F` stays opaque
-    # inside. sed is the only reader strict enough to refuse an unresolved
-    # argument -- there it could be `-i` -- so it alone surfaces this; the wc
-    # twin in CASES allows. The same sed resolves fine at top level and inside a
-    # for body, which is what makes this an inconsistency rather than caution.
-    # Fix is to thread the assignments visible in command[:start] into the
-    # recursive call, prefix-only: an assignment written after a substitution
-    # must not apply inside it.
+    # No outer expansion reaches inside a $(...) -- find_reasons analyses it as
+    # standalone text. Fix: thread the expansions visible in command[:start]
+    # into the recursion, prefix-only. Both twins in CASES allow.
     ("ask",    'F=/tmp/x.log; echo "$(sed -n 1,5p \"$F\")"'),
+    # The same, with a loop binding rather than an assignment.
+    ("ask",    'for j in A B; do printf "%s" "$(git shortlog $j)"; done'),
 ]
 
 
