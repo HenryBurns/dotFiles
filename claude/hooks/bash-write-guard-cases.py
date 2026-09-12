@@ -1062,12 +1062,17 @@ CASES = [
     ("silent", 'echo "line1\nline2"'),
     ("silent", "grep -c 'a\nb' f"),
     ("allow",  'F=/tmp/x.log\nwc -l \\\n  "$F"'),
-    # The twin of the OVER_ASKS entry: same unresolved $F inside the same
-    # substitution, but wc tolerates an opaque argument where sed cannot.
+    # An assignment and a loop word both reach INSIDE a substitution now, so
+    # these agree with the same commands written one level out.
     ("allow",  'F=/tmp/x.log; echo "$(wc -l \"$F\")"'),
-    # The loop twin: identical but for the loop word being literal, which is
-    # what the binding would have made it had it reached inside.
+    ("allow",  'F=/tmp/x.log; echo "$(sed -n 1,5p \"$F\")"'),
     ("allow",  'for j in A B; do printf "%s" "$(git shortlog A)"; done'),
+    ("allow",  'for j in A B; do printf "%s" "$(git shortlog $j)"; done'),
+    # Every value is checked, so one bad word in the list refuses the lot --
+    # it must not pass on the strength of the first.
+    ("ask",    'for f in a.txt -i; do echo "$(sed $f /workspace/x)"; done'),
+    # A binding written AFTER the substitution has not run yet.
+    ("ask",    'echo "$(sed -n 1,5p \"$F\")"; F=/tmp/x.log'),
 
     # Arithmetic read as a substitution closing at the first `)` left the parse
     # broken, so the guard fell silent and a write placed AFTER it ran
@@ -1185,12 +1190,6 @@ GAPS = [
 # produced it. Reading them as one list invites trading the first for the
 # second.
 OVER_ASKS = [
-    # No outer expansion reaches inside a $(...) -- find_reasons analyses it as
-    # standalone text. Fix: thread the expansions visible in command[:start]
-    # into the recursion, prefix-only. Both twins in CASES allow.
-    ("ask",    'F=/tmp/x.log; echo "$(sed -n 1,5p \"$F\")"'),
-    # The same, with a loop binding rather than an assignment.
-    ("ask",    'for j in A B; do printf "%s" "$(git shortlog $j)"; done'),
 ]
 
 

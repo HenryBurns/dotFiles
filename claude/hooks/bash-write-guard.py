@@ -1930,6 +1930,74 @@ def _substitute_var(token, name, value):
     return re.sub(pattern, lambda _match: value, token)
 
 
+# Most variants to check for one substitution. A cartesian product of loop
+# words, so it is capped: past this the inner text is judged unexpanded, which
+# is the behaviour that was already there.
+MAX_BINDING_VARIANTS = 8
+
+
+def prefix_bindings(tokens):
+    """{name: [values]} from assignments and `for` headers in a command prefix.
+
+    Only literal values, by the same rules the outer passes use, so nothing is
+    resolved here that expand_assignments or expand_loops would refuse.
+    """
+    bindings, index, total = {}, 0, len(tokens)
+    while index < total:
+        token = tokens[index]
+        if (token == "for" and index + 2 < total
+                and tokens[index + 2] == "in"):
+            name, words = tokens[index + 1], []
+            index += 3
+            while (index < total and tokens[index] not in OPERATORS
+                   and tokens[index] not in CONTROL_KEYWORDS):
+                words.append(tokens[index])
+                index += 1
+            if words and all(_expandable_word(word) for word in words):
+                bindings[name] = words
+            continue
+        assigned = ASSIGNMENT.match(token)
+        if assigned and readable_assignment(*assigned.groups()):
+            bindings[assigned.group(1)] = [assigned.group(2)]
+        index += 1
+    return bindings
+
+
+def substitution_variants(command, spans, which):
+    """Inner texts of span `which`, one per binding the prefix could give it.
+
+    Every value is checked -- `for f in a.txt -i` must not pass on its first
+    word -- and only bindings from the prefix apply.
+    """
+    start, end = spans[which]
+    inner = command[start + 2:end - 1]
+    # From the stripped command truncated at this span: slicing the raw text
+    # cuts mid-quote -- `echo "$(...)"` leaves a dangling `"` -- and tokenize
+    # then refuses the very prefix that holds the binding.
+    try:
+        tokens = tokenize(strip_substitutions(command, spans))
+    except ValueError:
+        return [inner]
+    seen, before = 0, []
+    for token in tokens:
+        if seen > which:
+            break
+        count = token.count(SUBST_PLACEHOLDER)
+        if seen + count > which:
+            break
+        seen += count
+        before.append(token)
+    bindings = prefix_bindings(before)
+
+    variants = [inner]
+    for name, values in bindings.items():
+        if len(variants) * len(values) > MAX_BINDING_VARIANTS:
+            return [inner]
+        variants = [_substitute_var(text, name, value)
+                    for text in variants for value in values]
+    return variants
+
+
 def find_reasons(command, depth=0, rules=None):
     """Write-capability reasons for a command, substitution-aware.
 
@@ -1970,9 +2038,9 @@ def find_reasons(command, depth=0, rules=None):
 
     stripped = strip_substitutions(command, spans)
     reasons = _flat_reasons(stripped, depth, rules)
-    for start, end in spans:
-        reasons.extend(find_reasons(command[start + 2:end - 1], depth + 1,
-                                    rules))
+    for which in range(len(spans)):
+        for inner in substitution_variants(command, spans, which):
+            reasons.extend(find_reasons(inner, depth + 1, rules))
     return list(dict.fromkeys(reasons))
 
 
@@ -2510,11 +2578,11 @@ def analyze(text, prefix, deny, depth, roots=()):
     if spans is None:
         return False, False
 
-    for start, end in spans:
-        inner_ok, _ = analyze(text[start + 2:end - 1], prefix, deny,
-                              depth + 1, roots)
-        if not inner_ok:
-            return False, False
+    for which in range(len(spans)):
+        for inner in substitution_variants(text, spans, which):
+            inner_ok, _ = analyze(inner, prefix, deny, depth + 1, roots)
+            if not inner_ok:
+                return False, False
 
     try:
         tokens = tokenize(strip_substitutions(text, spans))
