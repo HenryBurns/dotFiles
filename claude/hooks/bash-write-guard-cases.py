@@ -519,7 +519,14 @@ CASES = [
     ("ask",    "date --set=@0"),
     ("ask",    "date 202001010000"),
     ("ask",    "date --frobnicate"),          # unknown flag may take a value
-    # (The ';' chaining form is a tokenizer gap, pinned in GAPS below.)
+
+    # A quoted or escaped operator is an argument, so the segment keeps it and
+    # the tool's own check sees it. Splitting there instead built a phantom
+    # command out of the first one's arguments.
+    ("ask",    "tmux ls ';' new-session -d 'rm -rf /data'"),
+    ("ask",    "find . -name '*.pyc' -exec rm {} \\;"),
+    ("silent", "echo ';'"),                   # an argument is not a separator
+    ("silent", "ls ';' ls"),
     # -f sources a config file, whose contents are tmux commands; -c runs a
     # shell command outright. Both act before any subcommand is reached.
     ("ask",    "tmux -f /tmp/cfg ls"),
@@ -1204,12 +1211,6 @@ CASES = [
 # an allowlisted tool through data the guard cannot read. Closing one makes the
 # assertion below fail -- that is the reminder to move it into CASES.
 GAPS = [
-    # A token whose entire content is ';' loses its quoting in tokenize(), so
-    # `x \; y` splits into two commands where bash passes ';' to x as an
-    # argument. Also reached by `find -exec ... \;`. Left open because the
-    # phantom segment matches no rule and the rules still prompt; closing it
-    # changes how every find -exec is read.
-    ("silent", "tmux ls ';' new-session -d 'rm -rf /data'"),
 ]
 
 # Known OVER-asks, asserted at their current behavior. Nothing here is unsafe --

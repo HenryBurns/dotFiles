@@ -685,8 +685,71 @@ def newlines_to_separators(text):
     return "".join(out)
 
 
+class Quoted(str):
+    """Quoted operator text: an argument, not a separator. shlex loses the quotes."""
+
+
+# Recognisable as one shell word, so shlex yields it whole, and carrying the
+# operator's bytes so the original text survives the round trip.
+_QUOTED_MARK = "__CLAUDE_QUOTED_%s__"
+_QUOTED_TOKEN = re.compile(r"^__CLAUDE_QUOTED_([0-9a-f]+)__$")
+
+
+def mark_quoted_operators(text):
+    """Rewrite each quoted or escaped operator WORD to a marker shlex keeps.
+
+    Only a whole word is ambiguous: quoting inside a longer word (`a';'b`)
+    already tokenizes as one word, which is what the shell does too.
+
+    Unbalanced quotes are left alone -- shlex raises on them, and every caller
+    already treats that as unparseable.
+    """
+    out, index, total = [], 0, len(text)
+    while index < total:
+        if text[index].isspace():
+            out.append(text[index])
+            index += 1
+            continue
+        start, value, quoted, quote = index, [], False, None
+        while index < total and (quote or not text[index].isspace()):
+            char = text[index]
+            if quote == "'":
+                if char == "'":
+                    quote = None
+                else:
+                    value.append(char)
+                index += 1
+            elif quote == '"':
+                if char == "\\" and index + 1 < total:
+                    value.append(text[index + 1])
+                    index += 2
+                    continue
+                if char == '"':
+                    quote = None
+                else:
+                    value.append(char)
+                index += 1
+            elif char in ("'", '"'):
+                quote, quoted = char, True
+                index += 1
+            elif char == "\\" and index + 1 < total:
+                value.append(text[index + 1])
+                quoted = True
+                index += 2
+            else:
+                value.append(char)
+                index += 1
+        if quote:
+            return text
+        word = "".join(value)
+        out.append(_QUOTED_MARK % word.encode().hex()
+                   if quoted and word in OPERATORS else text[start:index])
+    return "".join(out)
+
+
 def tokenize(command):
-    lexer = shlex.shlex(newlines_to_separators(command), posix=True,
+    lexer = shlex.shlex(mark_quoted_operators(newlines_to_separators(command)),
+                        posix=True,
                         punctuation_chars=True)
     lexer.whitespace_split = True
     # shlex treats '#' as starting a comment ANYWHERE, discarding the rest of
@@ -696,14 +759,21 @@ def tokenize(command):
     # comments makes any trailing '#' an ordinary word instead, which at worst
     # makes us verify more than the shell runs. That is the safe direction.
     lexer.commenters = ""
-    return list(lexer)
+    return [_unmark(token) for token in lexer]
+
+
+def _unmark(token):
+    marked = _QUOTED_TOKEN.match(token)
+    if not marked:
+        return token
+    return Quoted(bytes.fromhex(marked.group(1)).decode())
 
 
 def split_segments(tokens):
     """Split a token list on shell control operators."""
     segments, current = [], []
     for token in tokens:
-        if token in OPERATORS:
+        if token in OPERATORS and not isinstance(token, Quoted):
             if current:
                 segments.append(current)
             current = []
