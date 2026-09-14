@@ -92,6 +92,7 @@
       "Bash(~/.claude/tools/transcript_cost.py:*)",
       "Bash(command -v:*)",
       "Bash(command -V:*)",
+      "Bash(pwd:*)",
       "Bash(nproc:*)",
       "Bash(sleep:*)",
       "Bash(free:*)",
