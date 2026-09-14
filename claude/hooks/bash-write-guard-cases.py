@@ -454,6 +454,38 @@ CASES = [
     # the path it would check is not the path bash will run.
     ("ask",    "python3 tool.py --check"),
     ("ask",    "cd /workspace; python3 tool.py --check"),
+    # `env` prints the environment when no COMMAND follows, the same read as
+    # printenv. Only boolean flags are vouched: a value-taking one would have
+    # to be counted correctly to know where the COMMAND starts, and no read
+    # needs them.
+    ("allow",  "env"),
+    ("allow",  "env | grep -i jira"),
+    ("allow",  "env -0 | head -5"),
+    ("ask",    "env rm -rf /workspace/d"),
+    ("ask",    "env FOO=1 rm -rf /workspace/d"),
+    ("ask",    "env -- rm -rf /workspace/d"),
+    ("ask",    "env -i sh"),
+    # -S splits a string into argv, so it carries a command; -C relocates one.
+    ("ask",    "env -S 'sh -c rm'"),
+    ("ask",    "env -C /tmp ls"),
+    ("ask",    "env -u FOO rm -rf /workspace/d"),
+    ("ask",    "env --ignore-signal=INT rm -rf /workspace/d"),
+    # Not vouched, but read-only in fact -- the exemption stays narrow rather
+    # than growing a value-flag parser for forms nobody types.
+    ("ask",    "env -u FOO"),
+    ("ask",    "env FOO=1"),
+    # `claude` is the worst name to leave unruled: `-p` runs an agent that can
+    # do anything, and `mcp add` rewrites config. Only the exact read form is
+    # vouched, so a rule naming it is never needed -- and never wanted.
+    ("allow",  "claude mcp list"),
+    ("allow",  'claude mcp list | grep -i jira'),
+    ("ask",    "claude -p 'rm -rf /data'"),
+    ("ask",    "claude"),
+    ("ask",    "claude mcp add foo bar"),
+    ("ask",    "claude mcp remove foo"),
+    ("ask",    "claude mcp list --extra"),
+    ("ask",    "claude mcp"),
+    ("ask",    "claude doctor"),
     # An absolute cd makes the script resolvable, so the interpreter is vouched
     # for the same as a direct run. Only the script position: a value after a
     # code-running flag is resolved too, but -c is not a safe flag letter, so

@@ -77,6 +77,36 @@ def ratio_over_ceiling(report):
         return (False, code, comment)
     return (comment / measured > MAX_RATIO, code, comment)
 
+HEAVY_BLOCK = re.compile(
+    r"^\s+(\S+:\d+)\s+(\d+) comment lines over (\d+) of code", re.MULTILINE)
+
+
+def explain(report):
+    """(headline, advice) naming which of the tool's checks actually refused.
+
+    Two gates share one exit code, so the failures arrive identical, and a
+    generic message sends you trimming comments that were never the problem.
+
+    The gate hands the tool only --max-block and --max-multiple, and the ratio
+    path cannot refuse without printing HEAVY. So a refusal that is not HEAVY is
+    the block check, with certainty and without a second run.
+    """
+    if "Verdict: HEAVY" in report:
+        return ("Blocked by the RATIO check: the added comments run past %sx the "
+                "density of the code they land in." % MAX_MULTIPLE,
+                "State the conclusion, not the derivation -- cut the sentences a "
+                "reader would not act on, then re-run.")
+
+    blocks = "".join("\n  %s  %s comment lines over %s of code" % b
+                     for b in HEAVY_BLOCK.findall(report))
+    return ("Blocked by the BLOCK check, not the ratio. The aggregate ratio is "
+            "within the gate, so trimming comments elsewhere will not clear "
+            "this. It is these blocks alone:" + (blocks or " (see the list below)"),
+            "Shorten the block, or restructure so it is not introduced here at "
+            "all -- a block is also flagged when existing lines are merely "
+            "re-indented into a new scope, which no rewording fixes.")
+
+
 def target_for(command):
     """What to measure: an explicit revision if the command names one, else staged.
 
@@ -163,20 +193,24 @@ def decide():
     if not failed and not over_ceiling:
         return 0
 
+    if failed:
+        headline, advice = explain(report)
+    else:
+        headline, advice = ("", "")
+
     extra = ""
     if over_ceiling:
         _, code, comment = ceiling
-        extra = (f"\n\nOver the absolute ceiling: {comment} comment lines to "
-                 f"{code} of code is past {MAX_RATIO:.0%}, which no baseline "
+        extra = (f"\n\nBlocked by the absolute CEILING: {comment} comment lines "
+                 f"to {code} of code is past {MAX_RATIO:.0%}, which no baseline "
                  f"excuses. The file being comment-dense is not a licence to "
                  f"add more.")
+        if not failed:
+            headline = "Blocked by the absolute ceiling, not by the tool's own checks."
+            advice = ("State the conclusion, not the derivation -- cut the "
+                      "sentences a reader would not act on, then re-run.")
 
-    emit_deny(
-        "Comment density is over the gate for this change:\n\n"
-        f"{report}{extra}\n\n"
-        "State the conclusion, not the derivation -- cut the sentences a reader "
-        "would not act on, then re-run."
-    )
+    emit_deny(f"{headline}\n\n{report}{extra}\n\n{advice}")
     return 0
 
 

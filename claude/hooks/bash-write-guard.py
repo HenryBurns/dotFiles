@@ -163,6 +163,7 @@ ALWAYS_ASK = {
     # the write is the tool's purpose rather than an unusual flag. Here before
     # any rule names perf, so a later Bash(perf:*) cannot make that silent.
     "perf": "records profiles to a file",
+    "claude": "runs an agent with its own permissions, or rewrites config",
     # -- privilege escalation ------------------------------------------------
     "sudo": "runs another command as another user",
     "doas": "runs another command as another user",
@@ -180,7 +181,7 @@ ALWAYS_ASK = {
 # Adding a vouching function to an ALWAYS_ASK entry usually means adding it
 # here too. The exception is a form a rule CAN name, like `Bash(command -v:*)`.
 VOUCHED_NOT_RULED = frozenset({"set", "ssh", "tmux", "date",
-                               "python", "python3"})
+                               "python", "python3", "claude", "env"})
 
 # ---------------------------------------------------------------------------
 # Control-flow recognition
@@ -493,19 +494,14 @@ def command_is_lookup(args):
             return True
     return False
 
-# Anything here means we refuse to reason about the command at all. Either it
-# rewrites the execution environment (eval, export), or it is a construct
-# outside the recognized subset (case, select), or it hides a command position.
+# Listing a word here abandons the whole command, not just its grant, so one
+# with any read-only form belongs in ALWAYS_ASK instead.
 REFUSED_WORDS = {
     "eval", "exec", "source", ".", "trap", "alias", "unalias",
     "case", "esac", "select", "function", "coproc",
     "export", "declare", "typeset", "local", "unset", "shift",
-    "mapfile", "readarray", "xargs", "env", "nohup", "sudo", "time",
+    "mapfile", "readarray", "xargs", "nohup", "sudo", "time",
 }
-# `command` hides a command position too, but is deliberately NOT listed: a
-# refusal here bails out of expand(), so analyze() never sees the segment and
-# could not tell `command -v ruff` from `command rm -rf x`. It is judged in
-# both places instead, and ALWAYS_ASK still catches the executing forms.
 
 # T.FLAG_SENSITIVE (sed/sort/find/awk) is defined with the tool tables: it is
 # built from T.AWK_LIKE, and evaluating that here would touch the tables before
@@ -1306,6 +1302,24 @@ def git_config_writes(args):
 # Defined here rather than beside ALWAYS_ASK because it holds function
 # references, which have to exist first. Compare VOUCHED_NOT_RULED, which is the
 # separate question of whether a rule could express the same thing.
+def env_reads(args):
+    """True for an `env` that prints the environment instead of running one.
+
+    "If no COMMAND, print the resulting environment" -- so the test is whether
+    any operand survives. A bare word is the COMMAND; `--` introduces one.
+    """
+    for arg in args:
+        if arg == "--" or not arg.startswith("-") or arg == "-":
+            return False
+        if arg.startswith("--"):
+            if arg not in T.ENV_READ_LONG:
+                return False
+            continue
+        if not all(char in T.ENV_READ_LETTERS for char in arg[1:]):
+            return False
+    return True
+
+
 ASK_EXEMPTIONS = {
     # Every file tee writes is named in argv, so when all of them are scratchpad
     # paths it is no more of a write than a redirect into that directory.
@@ -1323,6 +1337,11 @@ ASK_EXEMPTIONS = {
     # require it to pass on its own.
     "python": python_vouched,
     "python3": python_vouched,
+    "env": lambda rest, depth, rules: env_reads(rest),
+    # Exact, and nothing else. Enumerating this tool's read-only flags would be
+    # a standing bet that no future one runs a prompt; `mcp list` alone needs no
+    # such bet.
+    "claude": lambda rest, depth, rules: rest == ["mcp", "list"],
 }
 
 

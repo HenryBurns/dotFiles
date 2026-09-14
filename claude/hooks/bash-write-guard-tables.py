@@ -28,6 +28,15 @@ OWN_TOOLS = frozenset({
     "~/.claude/tools/transcript_cost.py",
 })
 
+# `env` with no COMMAND prints the environment. Only these boolean flags are
+# recognised: a value-taking flag (-u, -C, -S) would have to be counted
+# correctly to know where the COMMAND starts, and -S carries one outright.
+ENV_READ_LETTERS = set("i0v")
+ENV_READ_LONG = frozenset({
+    "--ignore-environment", "--null", "--debug", "--help", "--version",
+    "--list-signal-handling",
+})
+
 FIND_WRITE_FLAGS = {
     "-exec", "-execdir", "-delete", "-ok", "-okdir",
     "-fprintf", "-fls", "-fprint", "-fprint0",
