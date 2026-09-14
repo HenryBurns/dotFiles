@@ -350,7 +350,7 @@ def main():
     if guard.guard_disabled():
         print("write-guard: standing down (allowlisted worktree)")
     else:
-        reasons = guard.find_reasons(command)
+        reasons = guard.find_reasons(command, rules=(prefix, deny))
         if reasons:
             print(f"write-guard: WOULD ASK -- {'; '.join(reasons)}")
             blockers.append("write-guard")
