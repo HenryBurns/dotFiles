@@ -300,8 +300,7 @@ def main():
     stale = staleness_warning(cwd)
     print(f"\n{stale}\n" if stale else "")
 
-    # Kept apart because a write-guard grant clears one list and not the other.
-    blockers, path_blockers = [], []
+    blockers = []
 
     spans = guard.substitution_spans(command)
     if spans is None:
@@ -345,7 +344,7 @@ def main():
         stray = strays_for(segment, env, roots, guard)
         if stray:
             print(f"{'':<{width}}  ^ OUTSIDE WORKSPACE: {', '.join(stray)}")
-            path_blockers.append(f"path outside workspace: {stray[0]}")
+            blockers.append(f"path outside workspace: {stray[0]}")
 
     print()
     if guard.guard_disabled():
@@ -358,16 +357,13 @@ def main():
         elif guard.grant_verdict(command, cwd):
             print("write-guard: ALLOWS (control flow, $(...) substitution, "
                   "and/or a local grant; every command cleared)")
-            # A grant clears the path gate -- that override is the whole point,
-            # letting a verified read-only compound read outside the workspace.
-            # It does NOT clear the rule gate: `sed -n '/^import/,+2p' <path>`
-            # was recorded as hook=allow and toolDenialKind=permission-rule.
-            path_blockers = []
+            # A grant runs before the permission check and overrides it, so it
+            # clears the path gate and the rule gate alike.
+            blockers = []
         else:
             print("write-guard: silent")
 
     print()
-    blockers += path_blockers
     if blockers:
         print(f"VERDICT: prompts -- {'; '.join(blockers)}")
     else:

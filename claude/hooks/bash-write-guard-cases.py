@@ -1230,6 +1230,9 @@ GAPS = [
 # produced it. Reading them as one list invites trading the first for the
 # second.
 OVER_ASKS = [
+    # Refused with toolDenialKind=permission-rule while `echo "$HOME"` runs, so
+    # the braces alone decide it -- and a guard allow does not override this.
+    ("silent", 'echo "${HOME}"'),
 ]
 
 
