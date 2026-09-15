@@ -102,13 +102,22 @@ def message_from_command(command, cwd):
             parts.append(tok[2:])
             i += 1
             continue
+        # Every spelling git accepts, as for -m above: missing one fails the gate open,
+        # which is silent.
+        path = None
         if tok in ("-F", "--file") and i + 1 < len(argv):
+            path, step = argv[i + 1], 2
+        elif tok.startswith("--file="):
+            path, step = tok.split("=", 1)[1], 1
+        elif tok.startswith("-F") and len(tok) > 2:
+            path, step = tok[2:], 1
+        if path is not None:
             try:
-                with open(os.path.join(cwd, argv[i + 1])) as fh:
+                with open(os.path.join(cwd, path)) as fh:
                     parts.append(fh.read())
             except OSError:
                 return None
-            i += 2
+            i += step
             continue
         i += 1
     # git joins repeated -m with a blank line, which is how a body follows a
@@ -230,6 +239,16 @@ def _selftest():
     check("editor commit unseen", message_from_command("git commit", "."), None)
     check("amend no-edit unseen",
           message_from_command("git commit --amend --no-edit", "."), None)
+
+    # Every -F spelling git takes. --file= and glued -F once read as no message at all,
+    # so an over-long body committed that way was never measured.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "m.txt"), "w") as fh:
+            fh.write("S\n\nbody\n")
+        for form in ("-F m.txt", "--file m.txt", "--file=m.txt", "-Fm.txt"):
+            check(f"{form} read", message_from_command(f"git commit {form}", tmp),
+                  "S\n\nbody\n")
 
     check("rev found", revision_in("post-review c7ad8c929c2a"), "c7ad8c929c2a")
     check("HEAD found", revision_in("post-review HEAD"), "HEAD")
