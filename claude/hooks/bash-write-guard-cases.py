@@ -1265,6 +1265,11 @@ _WP_USE = ('{"type":"assistant","timestamp":"%s","message":{"content":'
            '"input":{"command":%s}}]}}')
 _WP_RESULT = ('{"type":"user","timestamp":"%s","message":{"content":'
               '[{"type":"tool_result","tool_use_id":"%s"}]}}')
+# The same record when the call was refused. toolDenialKind sits beside the
+# message, not inside it, and it is the ONLY place the outcome is written down.
+_WP_DENIED = ('{"type":"user","timestamp":"%s","toolDenialKind":"%s",'
+              '"message":{"content":'
+              '[{"type":"tool_result","tool_use_id":"%s"}]}}')
 _WP_HOOK = ('{"type":"attachment","timestamp":"%s","attachment":'
             '{"hookName":"PreToolUse:Bash","toolUseID":"%s",'
             '"stdout":"{\\"hookSpecificOutput\\": {\\"permissionDecision\\": '
@@ -1276,35 +1281,43 @@ WHY_PROMPTED_CASES = [
      [_WP_USE % ("2026-01-01T00:00:00.000Z", "t1", '"ls /tmp"'),
       _WP_HOOK % ("2026-01-01T00:00:00.100Z", "t1", "ask", "guard says no"),
       _WP_RESULT % ("2026-01-01T00:02:00.000Z", "t1")],
-     "ls /tmp", [("ask", "guard says no", 120.0)]),
+     "ls /tmp", [("ask", "guard says no", 120.0, None)]),
     # No hook line at all is NOT the same as an allow, and saying "allowed"
     # there would invent a record. Older transcripts simply do not carry one.
     ("missing hook record is reported as unknown",
      [_WP_USE % ("2026-01-01T00:00:00.000Z", "t2", '"ls /tmp"'),
       _WP_RESULT % ("2026-01-01T00:00:00.500Z", "t2")],
-     "ls /tmp", [(None, None, 0.5)]),
+     "ls /tmp", [(None, None, 0.5, None)]),
     # A command that never finished has no result line, so there is no elapsed
     # time to report -- distinct from an elapsed time of zero.
     ("no result line leaves the wait unknown",
      [_WP_USE % ("2026-01-01T00:00:00.000Z", "t3", '"ls /tmp"'),
       _WP_HOOK % ("2026-01-01T00:00:00.100Z", "t3", "ask", "guard says no")],
-     "ls /tmp", [("ask", "guard says no", None)]),
+     "ls /tmp", [("ask", "guard says no", None, None)]),
     # Matching is on the command text, so a fragment finds the whole command.
     # Anything else would need the caller to retype a multi-line command
     # exactly, which is the transcription trap this tool is meant to end.
     ("a fragment matches",
      [_WP_USE % ("2026-01-01T00:00:00.000Z", "t4", '"grep -rn foo bar | head"'),
       _WP_HOOK % ("2026-01-01T00:00:00.100Z", "t4", "allow", "fine")],
-     "grep -rn foo", [("allow", "fine", None)]),
+     "grep -rn foo", [("allow", "fine", None, None)]),
     ("a non-match finds nothing",
      [_WP_USE % ("2026-01-01T00:00:00.000Z", "t5", '"ls /tmp"'),
       _WP_HOOK % ("2026-01-01T00:00:00.100Z", "t5", "allow", "fine")],
      "something else", []),
+    # The hook's decision is not the outcome. Reading only the hook reported a
+    # refused command as allowed, which is the wrong answer to the one question
+    # this tool exists to settle.
+    ("a hook allow that was refused anyway is reported as denied",
+     [_WP_USE % ("2026-01-01T00:00:00.000Z", "t7", '"ls /tmp"'),
+      _WP_HOOK % ("2026-01-01T00:00:00.100Z", "t7", "allow", "cleared"),
+      _WP_DENIED % ("2026-01-01T00:00:04.000Z", "permission-rule", "t7")],
+     "ls /tmp", [("allow", "cleared", 4.0, "permission-rule")]),
     # A malformed line must not take the scan down with it: transcripts are
     # appended to live, so the last line can be a partial write.
     ("a truncated line is skipped",
      ['{"type":"assistant","timestamp":"2026-01-01T00:00',
       _WP_USE % ("2026-01-01T00:00:00.000Z", "t6", '"ls /tmp"'),
       _WP_HOOK % ("2026-01-01T00:00:00.100Z", "t6", "ask", "guard says no")],
-     "ls /tmp", [("ask", "guard says no", None)]),
+     "ls /tmp", [("ask", "guard says no", None, None)]),
 ]

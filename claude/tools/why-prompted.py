@@ -83,7 +83,8 @@ def scan_lines(lines, needle):
                 order.append(uid)
                 calls[uid] = {"at": entry.get("timestamp"),
                               "command": block["input"]["command"],
-                              "decision": None, "reason": None, "done": None}
+                              "decision": None, "reason": None, "done": None,
+                              "denied": None}
     if not calls:
         return []
 
@@ -103,13 +104,16 @@ def scan_lines(lines, needle):
                     and block.get("tool_use_id") in calls
                     and calls[block["tool_use_id"]]["done"] is None):
                 calls[block["tool_use_id"]]["done"] = entry.get("timestamp")
+                calls[block["tool_use_id"]]["denied"] = entry.get(
+                    "toolDenialKind")
 
     records = []
     for uid in order:
         call = calls[uid]
         start, end = _epoch(call["at"]), _epoch(call["done"])
         waited = round(end - start, 3) if start and end else None
-        records.append((call["decision"], call["reason"], waited))
+        records.append((call["decision"], call["reason"], waited,
+                        call["denied"]))
     return records
 
 
@@ -229,11 +233,16 @@ def main():
     shown = rows[-args.limit:]
     print(f"{len(rows)} recorded run(s)"
           + (f", showing the last {len(shown)}" if len(shown) < len(rows) else ""))
-    for when, session, cmd, decision, reason, waited in shown:
+    for when, session, cmd, decision, reason, waited, denied in shown:
         verdict = decision or "no hook record"
+        if denied:
+            verdict += f" -> DENIED ({denied})"
         print(f"\n{when}  {session}  {verdict}")
         if reason:
             print(f"  reason: {reason}")
+        if denied and decision == "allow":
+            print("  note: the hook allowed it and it was refused anyway -- "
+                  "a hook allow does not override a permission rule.")
         print(f"  elapsed: {_describe_wait(decision, waited)}")
         first = cmd.strip().splitlines()[0]
         more = len(cmd.strip().splitlines()) - 1
