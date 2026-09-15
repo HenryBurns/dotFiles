@@ -1929,6 +1929,27 @@ def relative_command(token):
     return "$" not in token and SUBST_PLACEHOLDER not in token
 
 
+def relative_script(token):
+    """True for an interpreter's script argument naming a file relative to cwd.
+
+    A bare name counts here and not in relative_command: an interpreter opens
+    its script as a path and never searches PATH for it.
+    """
+    if token.startswith(("/", "~", "-")) or not token:
+        return False
+    return "$" not in token and SUBST_PLACEHOLDER not in token
+
+
+def script_still_pending(token):
+    """True if `token` is a flag that leaves the script argument still ahead.
+
+    The letters python_script_argv vouches for, so the two agree on where the
+    script is; -c takes code, so it ends the hunt rather than being resolved.
+    """
+    return (token.startswith("-") and len(token) > 1
+            and all(c in T.PYTHON_SAFE_FLAG_LETTERS for c in token[1:]))
+
+
 def expand_cd(tokens):
     """(tokens, changed) with relative command words resolved against `cd`.
 
@@ -1973,12 +1994,20 @@ def expand_cd(tokens):
             index += 1
             continue
 
-        if pending_script and cwd and relative_command(token):
+        if pending_script and script_still_pending(token):
+            out.append(token)
+            index += 1
+            continue
+
+        if pending_script and cwd and relative_script(token):
             out.append(os.path.normpath(os.path.join(cwd, token)))
             changed = True
             pending_script = False
             index += 1
             continue
+
+        if pending_script:
+            pending_script = False
 
         if token in SUBSHELL_OPERATORS:
             statement_piped = True

@@ -450,10 +450,17 @@ CASES = [
     ("ask",    "python3"),                            # a REPL
     ("ask",    "python3 -"),                          # program on stdin
     ("ask",    "python3 -i /workspace/tool.py"),      # REPL after the script
-    # A relative script cannot be resolved: the guard does not track `cd`, so
-    # the path it would check is not the path bash will run.
+    # A bare name is a PATH lookup for a command word and a relative path for a
+    # script, so it resolves here where `./tool.py` already did. Without a cd
+    # there is no cwd to resolve against, and the check would be of a path bash
+    # is not going to run.
     ("ask",    "python3 tool.py --check"),
-    ("ask",    "cd /workspace; python3 tool.py --check"),
+    ("allow",  "cd /workspace; python3 tool.py --check"),
+    ("allow",  "cd /workspace; python3 -u tool.py"),   # a flag first
+    ("ask",    "cd /workspace; python3 unknown.py"),   # resolved, still unruled
+    # -c takes code, not a path. Resolving its value against the cwd would
+    # invent a path the shell never names.
+    ("ask",    "cd /workspace; python3 -c 'import os'"),
     # `env` prints the environment when no COMMAND follows, the same read as
     # printenv. Only boolean flags are vouched: a value-taking one would have
     # to be counted correctly to know where the COMMAND starts, and no read
