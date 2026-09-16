@@ -478,6 +478,15 @@ def unreadable_argument(arg):
     return arg.startswith("$") or SUBST_PLACEHOLDER in arg
 
 
+def literal_path(token):
+    """True if `token` spells a path outright, with nothing left to expand.
+
+    Stricter than unreadable_argument on purpose: a flag is only a flag if the
+    expansion leads, but one ANYWHERE in a path changes where it lands.
+    """
+    return "$" not in token and SUBST_PLACEHOLDER not in token
+
+
 def docker_reads(args):
     """True if `docker <args>` is a vetted read-only subcommand.
 
@@ -878,9 +887,7 @@ def in_sandbox(target):
     proven, so neither is sandboxed -- the whole value of this is that it never
     guesses a write is harmless.
     """
-    if not target.startswith("/") or "$" in target:
-        return False
-    if SUBST_PLACEHOLDER in target:
+    if not target.startswith("/") or not literal_path(target):
         return False
     # normpath collapses `..` lexically, so `/tmp/claude-N/p/s/scratchpad/../..`
     # cannot masquerade as inside. realpath is deliberately NOT used: it touches
@@ -1439,6 +1446,21 @@ def env_reads(args):
     return True
 
 
+# Checks that answer "why does this write?" with a reason, or falsy when the
+# command only reads. Adding a tool is an entry here, not another branch in
+# segment_reasons -- which is what kept four of these identical.
+WRITE_REASON_CHECKS = {
+    "ruff": ruff_writes,
+    "ssh-add": ssh_add_writes,
+    "systemctl": systemctl_writes,
+}
+GIT_SUB_REASON_CHECKS = {
+    "fetch": git_fetch_writes,
+    "ls-remote": git_ls_remote_writes,
+    "remote": git_remote_writes,
+    "archive": git_archive_writes,
+}
+
 ASK_EXEMPTIONS = {
     # Every file tee writes is named in argv, so when all of them are scratchpad
     # paths it is no more of a write than a redirect into that directory.
@@ -1501,8 +1523,9 @@ def segment_reasons(segment, literals=frozenset(), depth=0, rules=None):
     if name == "uniq" and uniq_writes(rest):
         reasons.append("uniq overwrites its second argument")
 
-    if name == "ruff":
-        why = ruff_writes(rest)
+    check = WRITE_REASON_CHECKS.get(name)
+    if check:
+        why = check(rest)
         if why:
             reasons.append(why)
 
@@ -1515,16 +1538,6 @@ def segment_reasons(segment, literals=frozenset(), depth=0, rules=None):
                 and "C" in token[1:])
             for token in rest):
         reasons.append("file -C writes a compiled magic file")
-
-    if name == "ssh-add":
-        why = ssh_add_writes(rest)
-        if why:
-            reasons.append(why)
-
-    if name == "systemctl":
-        why = systemctl_writes(rest)
-        if why:
-            reasons.append(why)
 
     if name == "find":
         hit = sorted(T.FIND_WRITE_FLAGS.intersection(rest))
@@ -1551,6 +1564,8 @@ def segment_reasons(segment, literals=frozenset(), depth=0, rules=None):
     git_sub = sub in T.GIT_FLAG_SENSITIVE
     flag_args = sub_args if git_sub else rest
     if name in T.FLAG_SENSITIVE or git_sub:
+        # Leading only, deliberately not literal_path's test: a placeholder
+        # mid-token is an address, as in `sed -n "1,$(echo 5)p" f`.
         if any((a.startswith("$") or a.startswith(SUBST_PLACEHOLDER))
                and a not in literals
                for a in flag_args):
@@ -1570,24 +1585,13 @@ def segment_reasons(segment, literals=frozenset(), depth=0, rules=None):
                                f"or moves a branch")
         if sub in T.GIT_WRITE_SUBCOMMANDS:
             reasons.append(f"git {sub} writes")
-        if sub == "fetch":
-            why = git_fetch_writes(sub_args)
-            if why:
-                reasons.append(why)
-        if sub == "ls-remote":
-            why = git_ls_remote_writes(sub_args)
-            if why:
-                reasons.append(why)
-        if sub == "remote":
-            why = git_remote_writes(sub_args)
+        check = GIT_SUB_REASON_CHECKS.get(sub)
+        if check:
+            why = check(sub_args)
             if why:
                 reasons.append(why)
         if sub == "config" and git_config_writes(sub_args):
             reasons.append("git config writes configuration")
-        if sub == "archive":
-            why = git_archive_writes(sub_args)
-            if why:
-                reasons.append(why)
         # A write is still a write, but one landing PROVABLY in the session
         # scratchpad is disposable -- the same exemption redirects and `tee`
         # already get, applied to the flags that name a file. An unreadable or
@@ -1962,9 +1966,7 @@ def trackable_cd(target):
     expansion is not a directory anyone has read. Everything else marks the cwd
     unknown, which is the safe answer -- an unknown cwd resolves nothing.
     """
-    if not target.startswith("/"):
-        return False
-    if "$" in target or SUBST_PLACEHOLDER in target:
+    if not target.startswith("/") or not literal_path(target):
         return False
     return not any(char in target for char in "*?[{")
 
@@ -1976,7 +1978,7 @@ def relative_command(token):
     """
     if "/" not in token or token.startswith(("/", "~")):
         return False
-    return "$" not in token and SUBST_PLACEHOLDER not in token
+    return literal_path(token)
 
 
 def relative_script(token):
@@ -1987,7 +1989,7 @@ def relative_script(token):
     """
     if token.startswith(("/", "~", "-")) or not token:
         return False
-    return "$" not in token and SUBST_PLACEHOLDER not in token
+    return literal_path(token)
 
 
 def script_still_pending(token):
