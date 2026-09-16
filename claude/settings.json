@@ -24,6 +24,7 @@
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git show:*)",
+      "Bash(git range-diff:*)",
       "Bash(git branch:*)",
       "Bash(git fetch:*)",
       "Bash(git merge-base:*)",
