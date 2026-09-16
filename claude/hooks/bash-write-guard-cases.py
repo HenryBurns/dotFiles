@@ -188,10 +188,8 @@ CASES = [
     ("allow",  "for f in a.txt b.txt; do sed -n 1,5p $f; done"),
     ("allow",  'L=/tmp/x.log; sed -n 1,5p "$L"'),
     ("silent", 'grep -c "$s" f'),                  # grep has no write flag
-    # git log DOES have one. This case asserted the opposite until `git log
-    # --output=FILE` was run and produced a 524-byte file; every diff-machinery
-    # subcommand accepts it. An unreadable "$sha" could be that flag, so the
-    # idiom now costs a prompt -- the alternative is granting the hole.
+    # git log DOES have one: every diff-machinery subcommand takes --output,
+    # so an unreadable "$sha" could be it.
     ("ask",    'git log -1 --format=%s "$sha"'),
     # ...and expansion is exact, so a read-only flag is no longer refused
     ("allow",  "for f in -n; do sed $f 1,5p data.txt; done"),
@@ -206,13 +204,9 @@ CASES = [
     ("allow",  'for f in "data.txt --color"; do grep -i x $f; done'),
     ("allow",  'for f in "a.txt HEAD" "b.txt --color"; do echo "== $f"; grep -i x $f; done'),
     ("ask",    'for f in "data.txt -i"; do sed $f s/a/b/; done'),
-    # The quotes are gone by the time the guard sees this, so a quoted "$f" is
-    # modelled as though it had been unquoted: `sed "x -i" y` really passes one
-    # argument and reads, and this asks. It asked before loop words could split
-    # too -- an opaque `$f` in front of sed already means "could be -i" -- so
-    # modelling the split costs no prompt that was not there anyway. Pinned
-    # because a quoting-aware expansion could legitimately relax it, and should
-    # have to change this line deliberately rather than by accident.
+    # Quotes are gone by the time the guard sees this, so `"$f"` is modelled as
+    # unquoted and this asks where bash would read. Pinned because a
+    # quoting-aware expansion could relax it, and should have to say so.
     ("ask",    'for f in "x -i"; do sed "$f" y; done'),
     # a piece may even be the command, which the shell word-splits just the same
     ("allow",  'for c in "grep -c"; do $c pattern data.txt; done'),
@@ -228,10 +222,9 @@ CASES = [
     ("silent", "case $x in a) echo 1;; esac"),
 
     # -- while / until -------------------------------------------------------
-    # The condition and the body are ordinary commands and every check applies
-    # to each, so these need no word-list vetting the way `for` does. What read
-    # assigns is deliberately never resolved: the body judges `$line` exactly as
-    # it judges a value out of `$(...)`, which is the whole safety property.
+    # The condition and the body are ordinary commands, so no word-list vetting
+    # is needed. What `read` assigns is never resolved: the body judges `$line`
+    # as it judges any unreadable value.
     ("allow",  "while true; do echo x; done"),
     ("allow",  'while read -r line; do echo "$line"; done'),
     ("allow",  'cat f | while read -r a b; do printf "%s %s\\n" "$a" "$b"; done'),
@@ -316,6 +309,7 @@ CASES = [
     ("ask",    'L=/tmp/x; tee "$L"'),
     ("silent", "export PATH=x; ls"),
     ("silent", "eval ls"),
+    # -- builtins that run whatever they are handed ------------------------
     # these three were "silent" until command wrappers joined ALWAYS_ASK;
     # "ask" is the stronger verdict, so the expectation moved, not the code
     ("ask",    "xargs rm"),
@@ -341,12 +335,13 @@ CASES = [
     ("silent", "set --; echo hi"),
     # An option name or letter that was not vetted refuses rather than guessing.
     ("silent", "set -o badoption; echo hi"),
+    ("silent", "set -eZ; echo hi"),
+    ("silent", "set -oe pipefail; echo hi"),       # `o` must end the cluster
 
+    # -- single-quoted literals cannot expand ------------------------------
     # Bash single quotes suppress expansion absolutely, so a token taken whole
-    # from a single-quoted span cannot be one. shlex discards the quotes, which
-    # made a literal awk program read as an opaque argument -- and arbitrarily:
-    # `awk '$1<10'` asked while `awk '{print $1}'` did not, because the check
-    # only looks at whether the token STARTS with `$`.
+    # from a single-quoted span cannot be one. shlex discards the quotes, so
+    # the marking has to be recovered from the raw text.
     ("silent", "awk -F: '$1<4362' f"),
     ("silent", "awk '{print $1}' f"),             # never asked; pinned anyway
     ("silent", "grep -n x f | awk -F: '$1<99'"),
@@ -363,10 +358,7 @@ CASES = [
     # flag, and they are indistinguishable by text, so the segment still asks.
     ("ask",    "awk '$HOME' $HOME"),
 
-    # `whoami` prints LOCAL identity and nothing else -- the orchestrator skill
-    # records it printing a name on a day with no login at all, which is why it
-    # is not a liveness check. Nothing about it reaches a shared branch, so it
-    # joins the two status subcommands as a proven read.
+    # -- read-only forms vetted from the tool's own --help -----------------
     ("silent", "orchestrator whoami"),
     ("ask",    "orchestrator whoami --force"),      # an unvetted flag refuses
     ("ask",    "orchestrator submit HEAD~1..HEAD"),
@@ -386,9 +378,9 @@ CASES = [
     ("silent", "ps -eo pid,lstart,etimes,args"),
     ("ask",    "ps -eo args > /workspace/out"),
 
-    # ssh carries an arbitrary command to a machine where no allow rule and no
-    # workspace boundary reaches, so it is in ALWAYS_ASK and this is its one
-    # exemption: vetted flags, and a remote command that passes the same
+    # -- command runners: ALWAYS_ASK, with a vetted read-only exemption ----
+    # ssh reaches a machine where no allow rule and no workspace boundary
+    # applies, so the exemption needs the remote command to pass the same
     # read-only AND allowlist test a local one would.
     ("allow",  "ssh -o BatchMode=yes -o ConnectTimeout=8 host 'ls /home'"),
     ("allow",  "ssh -p 22 host 'grep -c VmHWM /proc/self/status'"),
@@ -513,11 +505,9 @@ CASES = [
     ("ask",    "perf report -i /tmp/prof.data --stdio"),
     ("ask",    "ssh host 'perf record -o /tmp/x -- sleep 1'"),
 
-    # `date` has two usage forms and the second one WRITES: per `date --help`,
-    # `date [-u] [MMDDhhmm[[CC]YY][.ss]]` sets the system clock, as does -s.
-    # So a bare operand refuses, and read flags are allowlisted rather than -s
-    # refused -- short options cluster, and `-Is` is -I carrying its optional
-    # argument, not -I -s.
+    # `date [-u] [MMDDhhmm[[CC]YY][.ss]]` sets the system clock, as does -s, so
+    # a bare operand refuses. Read flags are allowlisted rather than -s refused
+    # because short options cluster: `-Is` is -I with its optional argument.
     ("allow",  "date -Is"),
     ("allow",  "date +%s"),
     ("allow",  "date -u -R"),
@@ -544,10 +534,8 @@ CASES = [
     ("ask",    "ssh -o BatchMode=yes host 'tmux new-session -d \"rm -rf /\"'"),
 
     # docker runs arbitrary code with host access: `-v /:/host` mounts the
-    # filesystem into the container, and exec enters a running one. Only the
-    # six allowlisted read-only subcommands are vouched, and by their own flag
-    # tables -- the same letter differs between them, `-f` following for logs
-    # and taking a filter for ps.
+    # filesystem in. Flag tables are per subcommand because the same letter
+    # differs between them -- `-f` follows for logs, filters for ps.
     ("ask",    "docker run -v /:/host alpine sh -c 'rm -rf /host/etc'"),
     ("ask",    "docker exec -it c bash"),
     ("ask",    "docker cp x c:/y"),
@@ -586,8 +574,6 @@ CASES = [
     ("ask",    "command -x ruff"),                 # unrecognized flag
     ("ask",    "command"),                         # resolves nothing
     ("ask",    "command -v ruff > /tmp/f"),        # the redirect still counts
-    ("silent", "set -eZ; echo hi"),
-    ("silent", "set -oe pipefail; echo hi"),       # `o` must end the cluster
 
     # -- ALWAYS_ASK: none of these are allowlisted, so they would prompt on
     # their own. The point is that one of them anywhere in a compound denies
@@ -603,16 +589,10 @@ CASES = [
     ("ask",    "chmod 0755 f"),
     ("ask",    "ln -s a b"),
     ("ask",    "tar -xzf x.tar.gz"),
-    # These pin the ways a command word can arrive, since each bypasses a
-    # different check: the bare name, an absolute path (basenamed by argv0_of,
-    # and the only form that works here because ~/.local/bin is not on PATH),
-    # behind a wrapper, inside a substitution, and behind an env prefix.
-    #
-    # The canary is `submit`, not `whoami`. It was whoami while orchestrator
-    # asked on every subcommand; once whoami became a proven read these stopped
-    # testing argv0 resolution and started testing the exemption, silently. A
-    # canary has to be a subcommand that can never be carved out -- submit is
-    # the write the ALWAYS_ASK entry exists for.
+    # -- how the command word itself arrives -------------------------------
+    # -- orchestrator: the read subcommands, and what must stay refused ----
+    # Every spelling below must still reach argv0_of, or the ALWAYS_ASK entry
+    # is bypassed by how the command word was written.
     ("ask",    "orchestrator submit --branch users/me/x"),
     ("ask",    "/opt/local/bin/orchestrator submit HEAD"),
     ("ask",    "timeout 60 orchestrator submit HEAD"),
@@ -667,6 +647,7 @@ CASES = [
     ("ask",    "patch -p1 < d.patch"),
     ("ask",    "python3 -c 'print(1)'"),
     ("ask",    "bash -c 'echo hi'"),
+    # -- OWN_TOOLS: this repo's own scripts, by resolved path --------------
     # An interpreter asks unless the script it runs is vouched for; OWN_TOOLS
     # vouches for these, run directly or through python3.
     ("allow",  "python3 ~/.claude/tools/why-prompt.py ls"),
@@ -703,8 +684,9 @@ CASES = [
     # not show up as segments, so this shape is easy to misread.
     ("allow",  "echo \"$(cut -d: -f2 f | paste -sd+ | bc)\""),
 
-    # A redirection is not an argument. Any check that counts positionals saw
-    # `2>&1` as two of them, so these ordinary reads reported writes.
+    # -- redirections are not arguments ------------------------------------
+    # Any check that counts positionals saw `2>&1` as two of them, so these
+    # ordinary reads reported writes.
     ("silent", "uniq -c f 2>&1"),
     ("silent", "git config user.name 2>/dev/null"),
     ("ask",    "uniq a b"),                      # still counted when real
@@ -723,6 +705,7 @@ CASES = [
     ("ask",    "ruff --config x.toml format f.py"),   # sub behind a value flag
     ("ask",    "ruff server"),
 
+    # -- the session scratchpad exemption ----------------------------------
     # A session scratchpad is disposable, so a write PROVABLY landing in one is
     # not worth a prompt. Provably means absolute and literal: a relative path
     # depends on a cwd an earlier `cd` may have changed, and `$P/f` is not a
@@ -746,10 +729,9 @@ CASES = [
     ("ask",    "sed -i s/a/b/ f.txt"),           # relative: cwd unprovable
     ("ask",    f"echo x | tee {SANDBOX}/f /etc/passwd"),
     ("ask",    f"sed --bogus -i s/a/b/ {SANDBOX}/f"),   # unknown flag
+    # -- flags that name an output file ------------------------------------
     # Every tool that names an output file goes through one extractor, so the
-    # same destination gets the same answer. sort and ruff used to ask here
-    # while git, sed, tee and uniq did not -- their output knowledge simply
-    # lived somewhere the scratchpad check never reached.
+    # same destination gets the same answer whichever tool writes it.
     ("allow",  f"sort -o {SANDBOX}/s.txt f"),
     ("allow",  f"sort --output={SANDBOX}/s.txt f"),
     ("allow",  f"sort -o{SANDBOX}/s.txt f"),          # attached short value
@@ -832,6 +814,7 @@ CASES = [
     ("allow",  "git -C /workspace/d log --oneline -1"),
     ("ask",    "git -C /workspace/d push origin master"),   # still a write
     ("ask",    "git -C /workspace/d remote set-url origin git@x:y.git"),
+    # -- builtins and grouping no rule can name ----------------------------
     # `continue` and friends are builtins, so no rule can ever name them.
     ("allow",  'for f in a b; do [ -e "$f" ] || continue; cat "$f"; done'),
 
@@ -859,6 +842,7 @@ CASES = [
     ("ask",    "cat > >(tee /tmp/f)"),            # >(...) is fed output: refused
     ("ask",    "diff `git show a` f"),            # backticks still refused
 
+    # -- git: locating the subcommand, and the diff machinery's --output ---
     # An unreadable value reaching the diff machinery could BE --output, which
     # turns an allowlisted read into a file write. These were granted outright.
     ("ask",    'A=$(cat f); git log $A'),
@@ -985,9 +969,8 @@ CASES = [
     ("ask",    "for f in -delete; do find . -name x $f; done"),
 
     # -- command wrappers hide the real argv0 from every write check ---------
-    # Safe today only because none are allowlisted; allowlisting `timeout`
-    # would have let `timeout 30 rm -rf x` through with no prompt at all,
-    # because nothing about it needs a grant.
+    # Safe today only because none are allowlisted: a `Bash(timeout:*)` rule
+    # would let `timeout 30 rm -rf x` through with no prompt at all.
     ("ask",    "timeout 30 rm -rf /tmp/x"),
     ("ask",    "nice rm -rf /tmp/x"),
     ("ask",    "stdbuf -o0 rm -rf /tmp/x"),
@@ -1121,9 +1104,7 @@ CASES = [
 
     # -- newlines separate commands -----------------------------------------
     # shlex treats a newline as whitespace under whitespace_split, so two
-    # commands on two lines collapsed into one whose argv0 was the FIRST one.
-    # The second became an argument, the segment matched the first command's
-    # rule, and a substitution anywhere made the whole thing grantable.
+    # commands on two lines collapse into one whose argv0 is the FIRST.
     ("ask",    'echo "$(echo hi)"\nrm -rf /tmp/x'),
     ("ask",    "ls\nrm -rf /tmp/x"),
     ("ask",    'echo "$(echo hi)"\nsed -i s/a/b/ f'),
