@@ -19,7 +19,7 @@ input falls through to the normal permission flow. It never guesses toward
 Nothing here is specific to a machine, employer, or toolchain. Grants that are
 belong in a sibling `local_grants.py` -- see load_local_grants().
 
-Self-test:  ./bash-write-guard.py --test   (no `python3`: that always asks)
+Self-test:  ./bash-write-guard.py --test
 """
 
 import json
@@ -2871,7 +2871,7 @@ def guard_disabled():
 
 
 # ---------------------------------------------------------------------------
-# Self-test:  ./bash-write-guard.py --test   (no `python3`: that always asks)
+# Self-test:  ./bash-write-guard.py --test
 # ---------------------------------------------------------------------------
 
 
