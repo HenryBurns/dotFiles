@@ -543,6 +543,33 @@ CASES = [
     ("allow",  "ssh -o BatchMode=yes host 'tmux ls'"),
     ("ask",    "ssh -o BatchMode=yes host 'tmux new-session -d \"rm -rf /\"'"),
 
+    # docker runs arbitrary code with host access: `-v /:/host` mounts the
+    # filesystem into the container, and exec enters a running one. Only the
+    # six allowlisted read-only subcommands are vouched, and by their own flag
+    # tables -- the same letter differs between them, `-f` following for logs
+    # and taking a filter for ps.
+    ("ask",    "docker run -v /:/host alpine sh -c 'rm -rf /host/etc'"),
+    ("ask",    "docker exec -it c bash"),
+    ("ask",    "docker cp x c:/y"),
+    ("ask",    "docker rm -f c"),
+    ("silent", "docker ps -a --no-trunc"),
+    ("silent", "docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}'"),
+    ("silent", "docker images -q"),
+    ("silent", "docker inspect -f '{{.State.Pid}}' c"),
+    ("silent", "docker logs -f --tail 20 c"),
+    ("silent", "docker top c"),
+    ("ask",    "docker ps --frobnicate"),      # unknown flag may take a value
+    # A global option reaches a different daemon or other credentials, so none
+    # is vouched -- not even the cosmetic ones, which buy nothing.
+    ("ask",    "docker -H tcp://evil:2375 ps"),
+    ("ask",    "docker --config /tmp/x ps"),
+    ("ask",    "docker -c other ps"),
+    # `docker top CONTAINER [ps OPTIONS]` hands the rest to ps inside the
+    # container, so nothing past the container name was vetted.
+    ("ask",    "docker top c -eo pid"),
+    # An argument the guard cannot read could BE one of the unvetted flags.
+    ("ask",    "docker logs --tail $N c"),
+
     # `command -v` resolves a name and runs nothing -- `which` as a builtin. It
     # was in REFUSED_WORDS *and* ALWAYS_ASK, so a `command -v ruff` beside six
     # allowlisted segments made the whole line ask.

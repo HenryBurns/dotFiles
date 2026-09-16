@@ -337,3 +337,30 @@ TMUX_GLOBAL_VALUE_FLAGS = {"-L", "-S"}
 # a character apart, so the check looks for the executing spelling anywhere in
 # an argument rather than trying to parse the format language.
 TMUX_FORMAT_EXEC = "#("
+
+# docker runs arbitrary code with the host's resources: `run -v /:/host` mounts
+# the filesystem into a container and `exec` enters a running one, so docker is
+# in ALWAYS_ASK and these are its exemptions.
+#
+# Flags are per subcommand rather than pooled, because the same letter means
+# different things: -f follows for logs, and takes a filter value for ps. A
+# pooled table would read one as the other and mis-count the arguments.
+#
+# No GLOBAL option is vouched at all, which is why there is no table for them:
+# -H and -c/--context reach a different daemon, --config and --tls* repoint the
+# credentials used to do it, and the rest are cosmetic.
+DOCKER_READ_FLAGS = {
+    "ps": ({"-a", "--all", "-l", "--latest", "--no-trunc", "-q", "--quiet",
+            "-s", "--size"},
+           {"-f", "--filter", "--format", "-n", "--last"}),
+    "images": ({"-a", "--all", "--digests", "--no-trunc", "-q", "--quiet",
+                "--tree"},
+               {"-f", "--filter", "--format"}),
+    "stats": ({"-a", "--all", "--no-stream", "--no-trunc"}, {"--format"}),
+    "inspect": ({"-s", "--size"}, {"-f", "--format", "--type"}),
+    "logs": ({"--details", "-f", "--follow", "-t", "--timestamps"},
+             {"--since", "-n", "--tail", "--until"}),
+    # `docker top CONTAINER [ps OPTIONS]` hands everything after the container
+    # to ps inside it, so no flag here was vetted.
+    "top": (set(), set()),
+}

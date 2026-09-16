@@ -164,6 +164,7 @@ ALWAYS_ASK = {
     # any rule names perf, so a later Bash(perf:*) cannot make that silent.
     "perf": "records profiles to a file",
     "claude": "runs an agent with its own permissions, or rewrites config",
+    "docker": "runs a container with host access, or execs into a running one",
     # -- privilege escalation ------------------------------------------------
     "sudo": "runs another command as another user",
     "doas": "runs another command as another user",
@@ -465,6 +466,54 @@ def date_reads(args):
             index += 1
             continue
         return False                       # -s, an unknown flag, or an operand
+    return True
+
+
+def unreadable_argument(arg):
+    """True if `arg` holds an expansion the guard cannot resolve to a literal.
+
+    Leading `$` only -- an argument cannot BE a flag unless the expansion
+    starts it -- but a placeholder anywhere counts.
+    """
+    return arg.startswith("$") or SUBST_PLACEHOLDER in arg
+
+
+def docker_reads(args):
+    """True if `docker <args>` is a vetted read-only subcommand.
+
+    A GLOBAL option refuses before the subcommand is even read: -H and
+    -c/--context pick a different daemon, so the subcommand that follows says
+    nothing about what is being talked to.
+    """
+    if not args:
+        return False
+    flags = T.DOCKER_READ_FLAGS.get(args[0])
+    if flags is None:
+        return False
+    bool_flags, value_flags = flags
+    index = 1
+    while index < len(args):
+        arg = args[index]
+        if unreadable_argument(arg):
+            return False
+        if not arg.startswith("-") or arg == "-":
+            index += 1                        # a container, image or id
+            continue
+        base = arg.split("=", 1)[0]
+        if base in bool_flags and "=" not in arg:
+            index += 1
+        elif base in value_flags:
+            if "=" in arg:
+                index += 1
+                continue
+            # The value is consumed here rather than looping round, so it needs
+            # the same check: unquoted it word-splits, and `--tail $N` with
+            # N="5 --x" hands docker a flag the guard never saw.
+            if index + 1 >= len(args) or unreadable_argument(args[index + 1]):
+                return False
+            index += 2
+        else:
+            return False
     return True
 
 
@@ -1219,7 +1268,7 @@ def orchestrator_reads(args):
     for arg in args[1:]:
         # An argument the guard cannot read could BE one of the flags it has
         # not vetted, so the exemption cannot be proven and is not given.
-        if arg.startswith("$") or SUBST_PLACEHOLDER in arg:
+        if unreadable_argument(arg):
             return False
         if arg.startswith("-"):
             # `--num-completed=5` is one token; split so the value does not
@@ -1412,6 +1461,7 @@ ASK_EXEMPTIONS = {
     # a standing bet that no future one runs a prompt; `mcp list` alone needs no
     # such bet.
     "claude": lambda rest, depth, rules: rest == ["mcp", "list"],
+    "docker": lambda rest, depth, rules: docker_reads(rest),
 }
 
 
