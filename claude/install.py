@@ -14,9 +14,6 @@ this repo must never carry:
 So repo settings win only for the keys the repo actually defines, allow lists are
 unioned, and local_grants.py is never touched. The previous settings.json is
 backed up first.
-
-Permissions are set explicitly: the hook must be readable by the interpreter and
-the tools executable, and a fresh machine's umask cannot be assumed.
 """
 
 import argparse
@@ -30,22 +27,38 @@ HOME = os.path.expanduser("~")
 LIVE = os.path.join(HOME, ".claude")
 REPO = os.path.dirname(os.path.abspath(__file__))
 
-# (path relative to both trees, mode). 0755 for anything executed directly.
-FILES = [
-    ("bash_env.sh", 0o644),
-    ("hooks/bash-write-guard.py", 0o755),
-    ("hooks/unguarded-worktrees", 0o644),
-    ("tools/why-prompt.py", 0o755),
-    ("tools/guard-verdict.py", 0o755),
-    ("skills/write-guard/SKILL.md", 0o644),
-]
-
 # Present in the repo as a template; must not overwrite a real one.
 NEVER_OVERWRITE = {"hooks/local_grants.py"}
 
 # Lists that are unioned instead of replaced, so local additions survive.
 UNION_KEYS = [("permissions", "allow"), ("permissions", "deny"),
               ("permissions", "ask")]
+
+
+def published_files():
+    """The paths sync.py exports, read from sync.py so the two cannot drift.
+
+    They did drift, and silently: settings.json configured four hooks while this
+    installed one, and the write guard arrived without the tables module it
+    imports. A guard that cannot import its tables fails closed, so the symptom
+    on a fresh machine is every command prompting.
+    """
+    sys.path.insert(0, REPO)
+    try:
+        from sync import FILES
+    except ImportError as exc:
+        sys.exit(f"cannot read the file list from {REPO}/sync.py: {exc}")
+    return FILES
+
+
+def install_mode(source):
+    """0755 for anything executed directly, 0644 otherwise.
+
+    From the repo file's own exec bit, which git tracks and sync.py carries over
+    from the live tree. Set explicitly because a fresh machine's umask cannot be
+    assumed, and the hook must at least be readable by the interpreter.
+    """
+    return 0o755 if os.access(source, os.X_OK) else 0o644
 
 
 def merge(repo, live):
@@ -127,11 +140,12 @@ def main():
         os.chmod(live_path, 0o600)
         print("  wrote settings.json")
 
-    for rel, mode in FILES:
+    for rel in published_files():
         source, target = os.path.join(REPO, rel), os.path.join(LIVE, rel)
         if not os.path.exists(source):
             print(f"  SKIP {rel} (not in repo)")
             continue
+        mode = install_mode(source)
         if args.dry_run:
             print(f"  would install {rel} (mode {mode:04o})")
             continue
