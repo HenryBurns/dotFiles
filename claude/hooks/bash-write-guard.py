@@ -165,6 +165,7 @@ ALWAYS_ASK = {
     "perf": "records profiles to a file",
     "claude": "runs an agent with its own permissions, or rewrites config",
     "docker": "runs a container with host access, or execs into a running one",
+    "mount": "attaches or moves a filesystem, or remounts one writable",
     # -- privilege escalation ------------------------------------------------
     "sudo": "runs another command as another user",
     "doas": "runs another command as another user",
@@ -182,7 +183,7 @@ ALWAYS_ASK = {
 # Adding a vouching function to an ALWAYS_ASK entry usually means adding it
 # here too. The exception is a form a rule CAN name, like `Bash(command -v:*)`.
 VOUCHED_NOT_RULED = frozenset({"set", "ssh", "tmux", "date",
-                               "python", "python3", "claude", "env"})
+                               "python", "python3", "claude", "env", "mount"})
 
 # ---------------------------------------------------------------------------
 # Control-flow recognition
@@ -487,6 +488,52 @@ def literal_path(token):
     return "$" not in token and SUBST_PLACEHOLDER not in token
 
 
+def vetted_flag_walk(args, bool_flags, value_flags):
+    """How many positionals `args` holds, or None if a flag was not vetted.
+
+    The exemptions differ only in what they make of the positionals -- docker
+    takes a container, orchestrator an id or a branch, mount must have none --
+    so the walk is here and the policy stays with each caller.
+    """
+    positionals, index = 0, 0
+    while index < len(args):
+        arg = args[index]
+        if unreadable_argument(arg):
+            return None
+        if not arg.startswith("-") or arg == "-":
+            positionals += 1
+            index += 1
+            continue
+        base = arg.split("=", 1)[0]
+        if base in bool_flags and "=" not in arg:
+            index += 1
+        elif base in value_flags:
+            if "=" in arg:
+                index += 1
+                continue
+            # The value is consumed here rather than looping round, so it needs
+            # the same check: unquoted it word-splits, and `--tail $N` with
+            # N="5 --x" hands the tool a flag the guard never saw.
+            if index + 1 >= len(args) or unreadable_argument(args[index + 1]):
+                return None
+            index += 2
+        else:
+            return None
+    return positionals
+
+
+def mount_reads(args):
+    """True for a `mount` that lists rather than mounts.
+
+    Its own usage line spells the read out -- `mount [-lhV]` -- and every
+    other form names a source or a target. So NO positional is allowed, which
+    is also what refuses the `LABEL=`/`UUID=` device forms: they carry an `=`
+    but do not start with `-`, so they arrive here as ordinary operands.
+    """
+    return vetted_flag_walk(args, T.MOUNT_READ_BOOL_FLAGS,
+                            T.MOUNT_READ_VALUE_FLAGS) == 0
+
+
 def docker_reads(args):
     """True if `docker <args>` is a vetted read-only subcommand.
 
@@ -499,31 +546,7 @@ def docker_reads(args):
     flags = T.DOCKER_READ_FLAGS.get(args[0])
     if flags is None:
         return False
-    bool_flags, value_flags = flags
-    index = 1
-    while index < len(args):
-        arg = args[index]
-        if unreadable_argument(arg):
-            return False
-        if not arg.startswith("-") or arg == "-":
-            index += 1                        # a container, image or id
-            continue
-        base = arg.split("=", 1)[0]
-        if base in bool_flags and "=" not in arg:
-            index += 1
-        elif base in value_flags:
-            if "=" in arg:
-                index += 1
-                continue
-            # The value is consumed here rather than looping round, so it needs
-            # the same check: unquoted it word-splits, and `--tail $N` with
-            # N="5 --x" hands docker a flag the guard never saw.
-            if index + 1 >= len(args) or unreadable_argument(args[index + 1]):
-                return False
-            index += 2
-        else:
-            return False
-    return True
+    return vetted_flag_walk(args[1:], *flags) is not None
 
 
 def command_is_lookup(args):
@@ -1373,17 +1396,19 @@ def git_fetch_writes(args):
 #
 # Flags are listed per subcommand, and exhaustively, so that one added in a
 # later version refuses instead of riding along.
+# (bool flags, value flags), as for docker: --num-completed takes a count, and
+# conflating the two made `--num-completed=5` read as an unvetted flag.
 ORCHESTRATOR_READ_FLAGS = {
-    "request_status": {"--show-history", "--commits", "--color",
-                       "--orig-commits", "--sort-by-name"},
-    "queue_status": {"--commits", "--fail-summary", "--num-completed"},
+    "request_status": ({"--show-history", "--commits", "--color",
+                        "--orig-commits", "--sort-by-name"}, set()),
+    "queue_status": ({"--commits", "--fail-summary"}, {"--num-completed"}),
     # One http_session.get and one log.info, with --num-completed its only
     # flag. Despite the name it lists PULL REQUESTS, not queue jobs.
-    "request_list": {"--num-completed"},
+    "request_list": (set(), {"--num-completed"}),
     # Prints local identity only -- the skill records it printing a name on a
     # day with nobody logged in, which is exactly why it is NOT a liveness
     # check. No flags are vetted, so any flag at all refuses.
-    "whoami": set(),
+    "whoami": (set(), set()),
 }
 # `to_branch` defaults to the cwd's upstream, so a bare `orchestrator
 # queue_status` is a vetted shape. A bare `request_status` is not: argparse
@@ -1398,22 +1423,12 @@ def orchestrator_reads(args):
     flags = ORCHESTRATOR_READ_FLAGS.get(args[0])
     if flags is None:
         return False
-    saw_id = False
-    for arg in args[1:]:
-        # An argument the guard cannot read could BE one of the flags it has
-        # not vetted, so the exemption cannot be proven and is not given.
-        if unreadable_argument(arg):
-            return False
-        if arg.startswith("-"):
-            # `--num-completed=5` is one token; split so the value does not
-            # make a vetted flag look like an unknown one.
-            if arg.split("=", 1)[0] not in flags:
-                return False
-            continue
-        saw_id = True   # an id, a branch, or a flag's value: all only steer
+    positionals = vetted_flag_walk(args[1:], *flags)
+    if positionals is None:
+        return False
     # No positional at all is not the shape that was vetted, unless the
     # subcommand documents a default for it.
-    return saw_id or args[0] in ORCHESTRATOR_OPTIONAL_POSITIONAL
+    return bool(positionals) or args[0] in ORCHESTRATOR_OPTIONAL_POSITIONAL
 
 
 def git_ls_remote_writes(args):
@@ -1611,6 +1626,7 @@ ASK_EXEMPTIONS = {
     # such bet.
     "claude": lambda rest, depth, rules: rest == ["mcp", "list"],
     "docker": lambda rest, depth, rules: docker_reads(rest),
+    "mount": lambda rest, depth, rules: mount_reads(rest),
 }
 
 

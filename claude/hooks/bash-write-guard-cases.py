@@ -558,6 +558,36 @@ CASES = [
     # An argument the guard cannot read could BE one of the unvetted flags.
     ("ask",    "docker logs --tail $N c"),
 
+    # mount's own usage line spells the read: `mount [-lhV]`. A source or a
+    # target operand means it is mounting, so ANY positional refuses. Vouched
+    # rather than ruled, because Bash(mount:*) would admit `mount /dev/sdb1
+    # /mnt` -- checked against mount(8) and both listing forms run here.
+    ("allow",  "mount"),
+    ("allow",  "mount -l"),
+    ("allow",  "mount --show-labels"),
+    ("allow",  "mount -t ext4"),
+    ("allow",  "mount --types=ext4"),
+    ("allow",  "mount -V"),
+    ("allow",  "mount 2>/dev/null | grep -i tlogs"),
+    ("ask",    "mount /dev/sdb1 /mnt"),
+    ("ask",    "mount -t ext4 /dev/sdb1 /mnt"),
+    ("ask",    "mount -a"),                   # mounts everything in fstab
+    ("ask",    "mount -o remount,rw /"),
+    ("ask",    "mount --bind /a /b"),
+    ("ask",    "mount -M /a /b"),
+    ("ask",    "mount --make-rshared /"),
+    # -L and -U name a device to mount; they are sources, not filters.
+    ("ask",    "mount -L mylabel"),
+    ("ask",    "mount -U 1234-5678"),
+    ("ask",    "mount --source /dev/sdb1"),
+    ("ask",    "mount --target /mnt"),
+    ("ask",    "mount -f /dev/sdb1 /mnt"),    # --fake still is not a read
+    ("ask",    "mount -T /tmp/fstab -a"),
+    ("ask",    "mount -N ns"),
+    ("ask",    "mount --frobnicate"),         # unknown flag may take a value
+    ("ask",    "mount -t $T"),                # unreadable: could BE a flag
+    ("silent", "grep -n mount f"),            # an argument is just an argument
+
     # `command -v` resolves a name and runs nothing -- `which` as a builtin. It
     # was in REFUSED_WORDS *and* ALWAYS_ASK, so a `command -v ruff` beside six
     # allowlisted segments made the whole line ask.

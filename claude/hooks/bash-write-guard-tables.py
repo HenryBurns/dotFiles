@@ -364,3 +364,19 @@ DOCKER_READ_FLAGS = {
     # to ps inside it, so no flag here was vetted.
     "top": (set(), set()),
 }
+
+# mount's usage line separates its two jobs itself: `mount [-lhV]` lists what
+# is already mounted, and every other form takes a source or a target and
+# changes the filesystem. So only the listing flags are here, and the
+# exemption additionally refuses any positional at all.
+#
+# Deliberately absent, each of which acts rather than reports: -a mounts
+# everything in fstab, -o/-r/-w set mount options, -B/-M/-R and --make-* move
+# or re-share a subtree, -L/-U/--source/--target name what to mount, -f
+# (--fake) still walks the mount path, and -T/-N redirect which fstab or
+# namespace is acted on.
+MOUNT_READ_BOOL_FLAGS = frozenset({"-l", "--show-labels",
+                                   "-h", "--help", "-V", "--version"})
+# With no operand -t only filters the listing, which is checked here; with one
+# it selects the type to mount, which the no-positional rule refuses.
+MOUNT_READ_VALUE_FLAGS = frozenset({"-t", "--types"})
