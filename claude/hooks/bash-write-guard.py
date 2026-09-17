@@ -2686,7 +2686,11 @@ def substitution_spans(text):
             index += 1
             continue
 
-        if char == "`" or text.startswith(">(", index):
+        # A backtick keeps its meaning inside double quotes, so it refuses in
+        # either state. `>(` does not -- bash leaves it literal there, and a
+        # C++ template closing onto a call puts one in an ordinary grep
+        # pattern. Reaching here at all means we are not in single quotes.
+        if char == "`" or (quote is None and text.startswith(">(", index)):
             return None
         # `<(cmd)` runs cmd and substitutes a /dev/fd path. Like $(...), the
         # result is data rather than syntax, so its only new risk is the

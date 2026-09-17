@@ -840,7 +840,13 @@ CASES = [
     ("ask",    "diff <(git log $A) f"),           # and so is a smuggled flag
     ("silent", 'echo "<(rm -rf x)"'),             # quoted: literal, never runs
     ("ask",    "cat > >(tee /tmp/f)"),            # >(...) is fed output: refused
+    # ...but quoted it is inert, exactly as `<(` is. A C++ template closing
+    # onto a call -- `foo<T>()` -- puts `>(` in an ordinary grep pattern.
+    ("silent", 'echo ">(rm -rf x)"'),
+    ("silent", "echo '>(rm -rf x)'"),
+    ("silent", 'grep -rn "failpoint<[^>]*>()" --include=*.cpp .'),
     ("ask",    "diff `git show a` f"),            # backticks still refused
+    ("ask",    'echo "`tee /tmp/f`"'),            # and inside "" they DO expand
 
     # -- git: locating the subcommand, and the diff machinery's --output ---
     # An unreadable value reaching the diff machinery could BE --output, which
