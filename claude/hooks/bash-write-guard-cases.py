@@ -667,6 +667,24 @@ CASES = [
     ("silent", "orchestrator request_list feature/some_queue 2>&1 | tail -6"),
     ("ask",    "orchestrator request_list $BRANCH"),
     ("ask",    "orchestrator request_list --commits x"),
+    # job_status is the fourth. get_job_data, get_tpe_data and get_queue_data
+    # are each one http_session.get -- the POST sitting next to them in
+    # common.py belongs to get_session_data, the auth check every subcommand
+    # makes -- and its flags are the shared status booleans.
+    ("silent", "orchestrator job_status 279384"),
+    ("silent", "orchestrator job_status 279384 2>&1 | head -40"),
+    ("silent", "orchestrator job_status --color --sort-by-name 279384"),
+    ("ask",    "orchestrator job_status"),          # argparse requires the id
+    ("ask",    "orchestrator job_status --newflag 1"),
+    ("ask",    "orchestrator job_status $JOB"),
+    # argparse prints usage and exits before any subcommand dispatches, but
+    # only vouched when help LEADS: a global value flag can swallow it, and
+    # `orchestrator --token --help submit` then runs submit.
+    ("silent", "orchestrator --help"),
+    ("silent", "orchestrator -h"),
+    ("silent", "orchestrator --help 2>&1 | grep -iE job"),
+    ("ask",    "orchestrator submit --help"),
+    ("ask",    "orchestrator --token --help submit"),
     # every other subcommand still asks, in every position
     ("ask",    "orchestrator submit"),
     ("ask",    "orchestrator resubmit 68625"),

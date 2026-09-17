@@ -1405,6 +1405,10 @@ ORCHESTRATOR_READ_FLAGS = {
     # One http_session.get and one log.info, with --num-completed its only
     # flag. Despite the name it lists PULL REQUESTS, not queue jobs.
     "request_list": (set(), {"--num-completed"}),
+    # Three http_session.get calls and the shared status booleans. The job id
+    # is required, so it is not an optional-positional shape.
+    "job_status": ({"--commits", "--color", "--orig-commits",
+                    "--sort-by-name"}, set()),
     # Prints local identity only -- the skill records it printing a name on a
     # day with nobody logged in, which is exactly why it is NOT a liveness
     # check. No flags are vetted, so any flag at all refuses.
@@ -1420,6 +1424,12 @@ def orchestrator_reads(args):
     """True if `orchestrator <args>` is a subcommand proven to only read."""
     if not args:
         return False
+    # argparse's help action prints usage and exits before any subcommand
+    # dispatches. Only vouched LEADING, because a global value flag can
+    # swallow it: in `orchestrator --token --help submit`, --help becomes the
+    # token's value and submit runs.
+    if args[0] in ("-h", "--help"):
+        return True
     flags = ORCHESTRATOR_READ_FLAGS.get(args[0])
     if flags is None:
         return False
