@@ -685,6 +685,22 @@ CASES = [
     ("silent", "orchestrator --help 2>&1 | grep -iE job"),
     ("ask",    "orchestrator submit --help"),
     ("ask",    "orchestrator --token --help submit"),
+    # submit is vouched ONLY as a dry run, and only with --dry-run leading.
+    # --description, --feature-name and --request take values, so a later
+    # --dry-run can become one: `submit --description --dry-run a b br` is a
+    # real push to a shared branch with --dry-run sitting in argv where a
+    # naive check would find it. No value flag is vetted, for the same reason.
+    ("silent", "orchestrator submit --dry-run aa bb feature/some_queue"),
+    ("silent", "orchestrator submit --dry-run --details aa bb feature/x"),
+    ("silent", "orchestrator submit --dry-run --commits --color aa bb x"),
+    ("ask",    "orchestrator submit --description --dry-run aa bb x"),
+    ("ask",    "orchestrator submit aa bb feature/some_queue --dry-run"),
+    ("ask",    "orchestrator submit --dry-run --description x aa bb y"),
+    ("ask",    "orchestrator submit --dry-run --reset-branch aa bb x"),
+    ("ask",    "orchestrator submit --dry-run --skip-presubmission-checks a b"),
+    ("ask",    "orchestrator submit --dry-run $RANGE feature/some_queue"),
+    ("ask",    "orchestrator submit --dry-run=1 aa bb x"),
+    ("ask",    "orchestrator --token t submit --dry-run aa bb x"),
     # every other subcommand still asks, in every position
     ("ask",    "orchestrator submit"),
     ("ask",    "orchestrator resubmit 68625"),

@@ -1419,6 +1419,14 @@ ORCHESTRATOR_READ_FLAGS = {
 # requires its id.
 ORCHESTRATOR_OPTIONAL_POSITIONAL = {"queue_status", "request_list", "whoami"}
 
+# What may accompany a vouched `submit --dry-run`: display only. Everything
+# else submit takes is withheld deliberately, including the --override-* and
+# --skip-* checks, which have no bearing on a dry run, and --reset-branch,
+# which is a write whatever else is on the line.
+ORCHESTRATOR_DRY_RUN_FLAGS = frozenset({
+    "--details", "--commits", "--orig-commits", "--color", "--sort-by-name",
+    "--print-rebase-hash-range"})
+
 
 def orchestrator_reads(args):
     """True if `orchestrator <args>` is a subcommand proven to only read."""
@@ -1430,6 +1438,15 @@ def orchestrator_reads(args):
     # token's value and submit runs.
     if args[0] in ("-h", "--help"):
         return True
+    # submit is vouched ONLY as a dry run, and only with --dry-run LEADING.
+    # --description, --feature-name and --request take values, so a later
+    # --dry-run becomes one and the push goes ahead with the flag still
+    # sitting in argv. Leading, nothing can have consumed it -- and no value
+    # flag is vetted above, so none can be reintroduced after it either.
+    if args[0] == "submit":
+        return (len(args) > 1 and args[1] == "--dry-run"
+                and vetted_flag_walk(args[2:], ORCHESTRATOR_DRY_RUN_FLAGS,
+                                     frozenset()) is not None)
     flags = ORCHESTRATOR_READ_FLAGS.get(args[0])
     if flags is None:
         return False
