@@ -629,6 +629,14 @@ CASES = [
     ("ask",    "orchestrator queue_status --color x"),
     ("ask",    "orchestrator queue_status --csv"),
     ("ask",    "orchestrator request_status --fail-summary 68625"),
+    # request_list is the third: one GET, one log line, and --num-completed is
+    # its only flag. Same optional to_branch as queue_status.
+    ("silent", "orchestrator request_list"),
+    ("silent", "orchestrator request_list feature/some_queue"),
+    ("silent", "orchestrator request_list --num-completed 5 x"),
+    ("silent", "orchestrator request_list feature/some_queue 2>&1 | tail -6"),
+    ("ask",    "orchestrator request_list $BRANCH"),
+    ("ask",    "orchestrator request_list --commits x"),
     # every other subcommand still asks, in every position
     ("ask",    "orchestrator submit"),
     ("ask",    "orchestrator resubmit 68625"),

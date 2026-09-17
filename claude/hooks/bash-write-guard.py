@@ -1253,6 +1253,9 @@ ORCHESTRATOR_READ_FLAGS = {
     "request_status": {"--show-history", "--commits", "--color",
                        "--orig-commits", "--sort-by-name"},
     "queue_status": {"--commits", "--fail-summary", "--num-completed"},
+    # One http_session.get and one log.info, with --num-completed its only
+    # flag. Despite the name it lists PULL REQUESTS, not queue jobs.
+    "request_list": {"--num-completed"},
     # Prints local identity only -- the skill records it printing a name on a
     # day with nobody logged in, which is exactly why it is NOT a liveness
     # check. No flags are vetted, so any flag at all refuses.
@@ -1261,7 +1264,7 @@ ORCHESTRATOR_READ_FLAGS = {
 # `to_branch` defaults to the cwd's upstream, so a bare `orchestrator
 # queue_status` is a vetted shape. A bare `request_status` is not: argparse
 # requires its id.
-ORCHESTRATOR_OPTIONAL_POSITIONAL = {"queue_status", "whoami"}
+ORCHESTRATOR_OPTIONAL_POSITIONAL = {"queue_status", "request_list", "whoami"}
 
 
 def orchestrator_reads(args):
