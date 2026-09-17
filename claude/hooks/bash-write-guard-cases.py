@@ -856,6 +856,47 @@ CASES = [
     ("ask",    "diff `git show a` f"),            # backticks still refused
     ("ask",    'echo "`tee /tmp/f`"'),            # and inside "" they DO expand
 
+    # -- heredocs: the body is stdin data, not a command list --------------
+    # Verified against bash before these were written, because the whole fix
+    # turns on one distinction: a QUOTED delimiter makes the body literal,
+    # while an UNQUOTED one still expands $(...) inside it. Skipping every
+    # body would therefore hide a real command.
+    ("silent", "cat <<'EOF'\nls -la\nEOF"),
+    ("silent", "cat <<'EOF'\nrm -rf /\nEOF"),     # data: the shell never runs it
+    ("silent", "cat <<EOF\nrm -rf /\nEOF"),       # no expansion here either
+    ("silent", "cat << 'CMDEOF'\ngit fetch origin 2>&1 | tail -2\nCMDEOF"),
+    ("silent", "cat <<'EOF'\nEOFX\nEOF"),         # only an exact line ends it
+    ("silent", "cat <<-EOF\n\ttabbed\n\tEOF"),    # <<- strips leading TABS
+    ("silent", "cat <<- EOF\n\ttabbed\n\tEOF"),   # blanks may follow the operator
+    ("silent", "cat <<'EOF' | grep -c x\nbody\nEOF"),
+    # The expansion cases -- the reason the body cannot simply be skipped.
+    ("ask",    "cat <<EOF\n$(rm -rf /tmp/x)\nEOF"),
+    ("silent", "cat <<'EOF'\n$(rm -rf /tmp/x)\nEOF"),
+    # Any quoting of the DELIMITER suppresses expansion, not just '': both of
+    # these were checked against bash, having first been written the wrong way
+    # round here on the assumption that only '' counted.
+    ("silent", 'cat <<"EOF"\n$(rm -rf /tmp/x)\nEOF'),
+    ("silent", "cat <<\\EOF\n$(rm -rf /tmp/x)\nEOF"),
+    # An unquoted body's substitution is inspected, not refused outright --
+    # a read-only one must still come back clean.
+    ("allow",  "cat <<EOF\n$(cat /workspace/f)\nEOF"),
+    ("silent", "cat <<'A' <<'B'\nx\nA\ny\nB"),   # bodies consumed in order
+    # Nothing around the heredoc stops being inspected.
+    ("ask",    "cat <<'EOF' > /tmp/f\nbody\nEOF"),
+    ("ask",    "cat <<'EOF'\nbody\nEOF\nrm -rf /tmp/y"),
+    ("ask",    "rm -rf /tmp/y\ncat <<'EOF'\nbody\nEOF"),
+    # A receiver that executes its stdin is ALWAYS_ASK on its own name, which
+    # is what makes skipping bodies safe at all.
+    ("ask",    "bash <<'EOF'\nls\nEOF"),
+    ("ask",    "python3 - <<'PY'\nprint(1)\nPY"),
+    # Shapes whose body cannot be bounded: a missing terminator, and one that
+    # bash rejects for trailing whitespace, so the body swallows the rest.
+    ("ask",    "cat <<'EOF'\nbody"),
+    ("ask",    "cat <<'EOF'\nbody\nEOF \nrm -rf /tmp/y"),
+    # `<<<` is a herestring, a different operator, and it expands.
+    ("silent", "cat <<<hello"),
+    ("ask",    'cat <<<"$(rm -rf /tmp/x)"'),
+
     # -- git: locating the subcommand, and the diff machinery's --output ---
     # An unreadable value reaching the diff machinery could BE --output, which
     # turns an allowlisted read into a file write. These were granted outright.

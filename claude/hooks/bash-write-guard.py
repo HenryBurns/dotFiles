@@ -743,6 +743,129 @@ def newlines_to_separators(text):
     return "".join(out)
 
 
+_HEREDOC_OPEN = re.compile(r"<<(-?)[ \t]*")
+
+
+def _read_delimiter(text, index):
+    """(delimiter, was_quoted, index_after) for the word at `index`.
+
+    Quoting the delimiter ANYWHERE -- `'EOF'`, `"EOF"`, `\\EOF`, even `EO'F'`
+    -- is what makes the body literal, so any quote at all sets the flag.
+    """
+    out, quoted, quote = [], False, None
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == quote:
+                quote = None
+            else:
+                out.append(char)
+            index += 1
+        elif char in ("'", '"'):
+            quoted, quote = True, char
+            index += 1
+        elif char == "\\" and index + 1 < len(text):
+            quoted = True
+            out.append(text[index + 1])
+            index += 2
+        elif char.isspace() or char in ";|&<>()":
+            break
+        else:
+            out.append(char)
+            index += 1
+    return ("".join(out) or None), quoted, index
+
+
+def _consume_bodies(text, index, pending):
+    """(index after the last body, substitutions rescued from unquoted ones).
+
+    Raises ValueError when a body is never terminated: the end of it cannot be
+    located, so neither can the commands that follow, and guessing would let
+    real commands ride along inside what we assumed was data.
+    """
+    rescued = []
+    for delim, quoted, dash in pending:
+        lines = []
+        while True:
+            stop = text.find("\n", index)
+            line = text[index:] if stop == -1 else text[index:stop]
+            if (line.lstrip("\t") if dash else line) == delim:
+                index = len(text) if stop == -1 else stop + 1
+                break
+            if stop == -1:
+                raise ValueError("unterminated heredoc")
+            lines.append(line)
+            index = stop + 1
+        if quoted:
+            continue
+        # An unquoted delimiter still expands the body, so the substitutions
+        # in it really do run. Hand them to the caller to splice back onto the
+        # command line rather than refusing: `<<EOF` holding `$(git log)` is
+        # ordinary, and the existing machinery already reads one correctly.
+        body = "\n".join(lines)
+        spans = substitution_spans(body)
+        if spans is None:
+            raise ValueError("unreadable expansion in a heredoc body")
+        rescued.extend(body[start:end] for start, end in spans)
+    return index, rescued
+
+
+def strip_heredocs(text):
+    """Remove heredoc bodies, which are the receiver's stdin, not commands.
+
+    Without this the tokenizer splits the body on newlines, so every line
+    reads as a command and the terminator reads as a bare one that matches no
+    allow rule -- `why-prompt.py << 'CMDEOF'` prompted on a phantom `CMDEOF`.
+
+    Dropping a body is only safe because a receiver that EXECUTES its stdin
+    (`bash`, `python3 -`) is in ALWAYS_ASK on its own name, so it prompts on
+    the command rather than on anything found in the body.
+    """
+    out, pending, index, quote = [], [], 0, None
+    while index < len(text):
+        char = text[index]
+        if quote == "'":
+            quote = None if char == "'" else quote
+            out.append(char)
+            index += 1
+        elif quote == '"':
+            if char == "\\" and index + 1 < len(text):
+                out.append(text[index:index + 2])
+                index += 2
+                continue
+            quote = None if char == '"' else quote
+            out.append(char)
+            index += 1
+        elif char in ("'", '"'):
+            quote = char
+            out.append(char)
+            index += 1
+        elif char == "\\" and index + 1 < len(text):
+            out.append(text[index:index + 2])
+            index += 2
+        elif text.startswith("<<<", index):
+            out.append("<<<")       # a herestring: one word, no body follows
+            index += 3
+        elif text.startswith("<<", index):
+            opener = _HEREDOC_OPEN.match(text, index)
+            delim, quoted, after = _read_delimiter(text, opener.end())
+            if delim is None:
+                raise ValueError("heredoc with no delimiter")
+            pending.append((delim, quoted, bool(opener.group(1))))
+            index = after
+        elif char == "\n" and pending:
+            index, rescued = _consume_bodies(text, index + 1, pending)
+            out.extend(f" {span}" for span in rescued)
+            out.append("\n")
+            pending = []
+        else:
+            out.append(char)
+            index += 1
+    if pending:
+        raise ValueError("unterminated heredoc")
+    return "".join(out)
+
+
 class Quoted(str):
     """Quoted operator text: an argument, not a separator. shlex loses the quotes."""
 
@@ -806,7 +929,8 @@ def mark_quoted_operators(text):
 
 
 def tokenize(command):
-    lexer = shlex.shlex(mark_quoted_operators(newlines_to_separators(command)),
+    lexer = shlex.shlex(mark_quoted_operators(
+                            newlines_to_separators(strip_heredocs(command))),
                         posix=True,
                         punctuation_chars=True)
     lexer.whitespace_split = True
@@ -2189,6 +2313,14 @@ def find_reasons(command, depth=0, rules=None):
         return list(dict.fromkeys(_flat_reasons(command) + [
             "substitution nested deeper than the guard inspects"]))
 
+    # Heredoc bodies come out before the substitution scan, not just before
+    # tokenizing: under a quoted delimiter even `$(rm -rf x)` in the body is
+    # inert data, and scanning the raw text would recurse into it anyway.
+    try:
+        command = strip_heredocs(command)
+    except ValueError as exc:
+        return [f"contains a heredoc the guard cannot read ({exc})"]
+
     # Before anything else: `$((...))` is not a command substitution, and
     # reading it as one loses the whole command, not just the arithmetic.
     resolved = strip_arithmetic(command)
@@ -2745,6 +2877,13 @@ def analyze(text, prefix, deny, depth, roots=()):
     so a substitution's only new risk is the commands inside its parens.
     """
     if depth > MAX_SUBST_DEPTH:
+        return False, False
+
+    # Same reason as in find_reasons: a body left in place reads as command
+    # positions, and one of them matching no rule is what withholds the grant.
+    try:
+        text = strip_heredocs(text)
+    except ValueError:
         return False, False
 
     text = strip_arithmetic(text)
