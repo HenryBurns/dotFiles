@@ -61,6 +61,7 @@
       "Bash(uniq:*)",
       "Bash(comm:*)",
       "Bash(col:*)",
+      "Bash(uname:*)",
       "Bash(tee:*)",
       "Bash(ruff:*)",
       "Bash([:*)",
