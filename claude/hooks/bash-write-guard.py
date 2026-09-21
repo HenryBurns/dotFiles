@@ -166,6 +166,7 @@ ALWAYS_ASK = {
     "claude": "runs an agent with its own permissions, or rewrites config",
     "docker": "runs a container with host access, or execs into a running one",
     "mount": "attaches or moves a filesystem, or remounts one writable",
+    "man": "can hand the page to a pager, browser or formatter of your choosing",
     # -- privilege escalation ------------------------------------------------
     "sudo": "runs another command as another user",
     "doas": "runs another command as another user",
@@ -183,7 +184,8 @@ ALWAYS_ASK = {
 # Adding a vouching function to an ALWAYS_ASK entry usually means adding it
 # here too. The exception is a form a rule CAN name, like `Bash(command -v:*)`.
 VOUCHED_NOT_RULED = frozenset({"set", "ssh", "tmux", "date",
-                               "python", "python3", "claude", "env", "mount"})
+                               "python", "python3", "claude", "env", "mount",
+                               "man"})
 
 # ---------------------------------------------------------------------------
 # Control-flow recognition
@@ -532,6 +534,17 @@ def mount_reads(args):
     """
     return vetted_flag_walk(args, T.MOUNT_READ_BOOL_FLAGS,
                             T.MOUNT_READ_VALUE_FLAGS) == 0
+
+
+def man_reads(args):
+    """True for a `man` that only formats a page to stdout.
+
+    Page names and section numbers are ordinary positionals; it is the flags
+    that decide, and the ones that run a program or rewrite a cache are
+    absent from both tables, so each refuses.
+    """
+    return vetted_flag_walk(args, T.MAN_READ_BOOL_FLAGS,
+                            T.MAN_READ_VALUE_FLAGS) is not None
 
 
 def docker_reads(args):
@@ -1654,6 +1667,7 @@ ASK_EXEMPTIONS = {
     "claude": lambda rest, depth, rules: rest == ["mcp", "list"],
     "docker": lambda rest, depth, rules: docker_reads(rest),
     "mount": lambda rest, depth, rules: mount_reads(rest),
+    "man": lambda rest, depth, rules: man_reads(rest),
 }
 
 

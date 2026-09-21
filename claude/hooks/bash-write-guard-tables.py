@@ -380,3 +380,22 @@ MOUNT_READ_BOOL_FLAGS = frozenset({"-l", "--show-labels",
 # With no operand -t only filters the listing, which is checked here; with one
 # it selects the type to mount, which the no-positional rule refuses.
 MOUNT_READ_VALUE_FLAGS = frozenset({"-t", "--types"})
+
+# man formats a page to stdout, which is a read -- but not under every flag,
+# and the exceptions are why a prefix rule cannot stand in for this table
+# (`man --help`, 2026-09-21). Withheld: -P/--pager and -H/--html hand the text
+# to a program the caller names, -C reads a config file that can set either,
+# -c/--catman and -u/--update rewrite man's own caches, and -t/-T/-X/-Z run
+# groff or a viewer. Searching and locating are reads, so -k, -f, -w and -l
+# are here.
+MAN_READ_BOOL_FLAGS = frozenset({
+    "-a", "--all", "-f", "--whatis", "-k", "--apropos",
+    "-K", "--global-apropos", "-w", "--where", "--path", "--location",
+    "-W", "--where-cat", "--location-cat", "-i", "--ignore-case",
+    "-I", "--match-case", "--regex", "--wildcard", "--names-only",
+    "--no-subpages", "-7", "--ascii", "--no-hyphenation", "--nh",
+    "--no-justification", "--nj", "-l", "--local-file", "-D", "--default",
+    "-h", "-?", "--help", "--usage"})
+MAN_READ_VALUE_FLAGS = frozenset({
+    "-s", "-S", "--sections", "-e", "--extension", "-L", "--locale",
+    "-m", "--systems", "-M", "--manpath", "-E", "--encoding"})

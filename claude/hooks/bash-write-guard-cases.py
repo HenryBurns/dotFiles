@@ -588,6 +588,25 @@ CASES = [
     ("ask",    "mount -t $T"),                # unreadable: could BE a flag
     ("silent", "grep -n mount f"),            # an argument is just an argument
 
+    # man formats a page, but several flags hand the text to a program of the
+    # caller's choosing, and two rewrite man's own caches. Vouched rather than
+    # ruled for the usual reason: Bash(man:*) would admit every one of them.
+    ("allow",  "man mount"),
+    ("allow",  "man 8 mount"),
+    ("allow",  "man -a mount"),
+    ("allow",  "man -k pattern"),
+    ("allow",  "man -s 2 open"),
+    ("allow",  "man -w mount"),
+    ("allow",  "man mount | head -20"),
+    ("ask",    "man -P 'sh -c \"rm -rf /\"' mount"),   # -P runs the pager
+    ("ask",    "man -H firefox mount"),                # -H runs a browser
+    ("ask",    "man -C /tmp/cfg mount"),        # a config file sets PAGER
+    ("ask",    "man -c mount"),                 # catman rewrites cat pages
+    ("ask",    "man -u"),                       # updates the man cache
+    ("ask",    "man -t mount"),                 # hands the page to groff
+    ("ask",    "man --frobnicate mount"),       # unknown flag may take a value
+    ("ask",    "man -s $S open"),               # unreadable: could BE a flag
+
     # `command -v` resolves a name and runs nothing -- `which` as a builtin. It
     # was in REFUSED_WORDS *and* ALWAYS_ASK, so a `command -v ruff` beside six
     # allowlisted segments made the whole line ask.
