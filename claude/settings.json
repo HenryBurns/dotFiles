@@ -60,6 +60,7 @@
       "Bash(sort:*)",
       "Bash(uniq:*)",
       "Bash(comm:*)",
+      "Bash(col:*)",
       "Bash(tee:*)",
       "Bash(ruff:*)",
       "Bash([:*)",
