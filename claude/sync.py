@@ -111,6 +111,16 @@ def load_deny():
         return None, f"{os.path.basename(DENY_FILE)} is not valid regex: {exc}"
 
 
+# env keys whose VALUE names a service rather than a path. The __HOME__ rewrite
+# below cannot launder a hostname, so one of these reaching the leak scanner
+# aborts the whole publish instead of dropping one entry. Named individually
+# rather than matched against the denylist: a content match would drop any
+# variable that merely mentioned a keyword, and a portable setting is worth
+# keeping. Each points somewhere that does not exist off this network.
+DROP_ENV_KEYS = {
+    "ANTHROPIC_BASE_URL": "internal gateway",
+}
+
 def scrub_settings(settings):
     """Portable subset of a settings dict, plus a list of what was dropped."""
     dropped, out = [], {}
@@ -145,6 +155,9 @@ def scrub_settings(settings):
     if isinstance(env, dict):
         out["env"] = {}
         for key, value in env.items():
+            if key in DROP_ENV_KEYS:
+                dropped.append(f"env.{key} ({DROP_ENV_KEYS[key]})")
+                continue
             if isinstance(value, str):
                 # Every occurrence, not just a leading one, and every spelling
                 # rather than the first that hits: PATH is a colon-joined LIST,

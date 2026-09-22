@@ -1,5 +1,7 @@
 {
   "env": {
+    "ENABLE_TOOL_SEARCH": "true",
+    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
     "BASH_ENV": "__HOME__/.claude/bash_env.sh",
     "PATH": "__HOME__/bin:__HOME__/.local/bin:__HOME__/bin:__HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin",
     "SSH_AUTH_SOCK": "__HOME__/.ssh/ssh_auth_sock"
