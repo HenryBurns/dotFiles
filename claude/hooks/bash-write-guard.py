@@ -152,6 +152,11 @@ ALWAYS_ASK = {
     "nohup": "runs another command the guard cannot attribute",
     "time": "runs another command the guard cannot attribute",
     "command": "runs another command the guard cannot attribute",
+    # Reading a file into an array is a read, but -C names a callback run every
+    # -c lines, so this belongs with the runners. No exemption: it is a niche
+    # builtin, and the read-only form has plainer substitutes.
+    "mapfile": "runs a callback command with -C",
+    "readarray": "runs a callback command with -C",
     # The broadest vector there is: an arbitrary command on another machine,
     # where no allow rule and no workspace boundary reaches. ssh_remote_command
     # is the one exemption. Listing it here is also what makes a broad

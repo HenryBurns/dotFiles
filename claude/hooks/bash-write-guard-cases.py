@@ -607,6 +607,17 @@ CASES = [
     ("ask",    "man --frobnicate mount"),       # unknown flag may take a value
     ("ask",    "man -s $S open"),               # unreadable: could BE a flag
 
+    # mapfile reads a file into an array, which is a read -- but -C names a
+    # callback command run every -c lines, so it is a command runner like the
+    # rest, and no read-only form is worth an exemption for a builtin this
+    # niche. It had no rule, so it was already silent; the entry is what stops
+    # it from riding along in an otherwise read-only compound.
+    ("ask",    "mapfile -t C < f"),
+    ("ask",    "readarray -t C < f"),           # the same builtin, other name
+    ("ask",    "mapfile -C 'rm -rf x' -c 1 A < f"),
+    ("ask",    "cd /tmp && mapfile -t C < f && head -1 f"),
+    ("silent", "grep -n mapfile f"),            # an argument is just an argument
+
     # `command -v` resolves a name and runs nothing -- `which` as a builtin. It
     # was in REFUSED_WORDS *and* ALWAYS_ASK, so a `command -v ruff` beside six
     # allowlisted segments made the whole line ask.
