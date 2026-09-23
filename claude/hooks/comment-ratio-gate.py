@@ -107,6 +107,29 @@ def explain(report):
             "re-indented into a new scope, which no rewording fixes.")
 
 
+def commits_all(command):
+    """Does this `git commit` stage tracked files itself, via -a/--all?
+
+    Only the segment after `git commit` counts: `git add -A && git commit` puts
+    an unrelated -A earlier in the same line. Short flags bundle, so -am is -a.
+    A heredoc message holding an apostrophe makes shlex raise, same as below.
+    """
+    m = re.search(r"\bgit\s+commit(?![\w-])", command)
+    if not m:
+        return False
+    scope = command[m.end():].split(";")[0].split("|")[0].split("&")[0]
+    try:
+        tokens = shlex.split(scope)
+    except ValueError:
+        tokens = scope.split()
+    for tok in tokens:
+        if tok == "--all":
+            return True
+        if tok.startswith("-") and not tok.startswith("--") and "a" in tok[1:]:
+            return True
+    return False
+
+
 def target_for(command):
     """What to measure: an explicit revision if the command names one, else staged.
 
@@ -114,9 +137,13 @@ def target_for(command):
     reads -- measuring only what is staged would miss everything already
     committed. A plain `git commit` has no commit yet, so the staged diff is
     both the best and the only answer.
+
+    `git commit -a` is the exception, and it silently defeated this gate: -a
+    stages at commit time, so nothing is staged while the hook runs and the
+    staged diff is empty. Measure the working tree, which is what -a commits.
     """
     if re.search(r"\bgit\s+commit(?![\w-])", command):
-        return ["--staged"]
+        return ["--worktree"] if commits_all(command) else ["--staged"]
 
     # Read the revision out of the post itself, not the whole command line. A
     # compound that merely mentions a revision earlier -- an `echo` naming HEAD,
@@ -237,6 +264,17 @@ def _selftest():
         ("post-review HEAD", ["HEAD"]),
         ("post-review", ["--staged"]),
         ("git add f && git commit --amend", ["--staged"]),
+        # -a stages at commit time, so nothing is staged when the hook runs.
+        ("git commit -a -m x", ["--worktree"]),
+        ("git commit -am x", ["--worktree"]),
+        ("git commit --all -m x", ["--worktree"]),
+        ("git commit --amend -a --no-edit", ["--worktree"]),
+        # -A belongs to the add, not the commit, and --amend is not --all.
+        ("git add -A && git commit -m x", ["--staged"]),
+        ("git commit --amend --no-edit", ["--staged"]),
+        # An apostrophe in a heredoc body makes shlex raise; the fallback split
+        # still sees -a as its own token.
+        ("git commit -a -F - <<'MSG'\nthe parser's CPU\nMSG", ["--worktree"]),
         # The revision named by the post wins over one mentioned earlier in a
         # compound, and over a later segment.
         ('echo "HEAD=x"; post-review c7ad8c929c2a', ["c7ad8c929c2a"]),
