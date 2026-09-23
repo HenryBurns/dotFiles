@@ -64,6 +64,7 @@ FILES = [
 # Named so the omission is a decision on the record, not an oversight.
 SKIP = {
     "hooks/local_grants.py": "site-specific grants; names internal tooling",
+    "hooks/local-grants-cases.py": "tests the local grants above, so as local",
     "hooks/allowed-blueprints": "internal test-blueprint names",
     "CLAUDE.md": "workplace build, branch and release conventions",
     "tools/share-perms.sh": "bundles the two files above",

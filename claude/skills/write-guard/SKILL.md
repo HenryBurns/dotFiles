@@ -17,6 +17,7 @@ guard checks — that lives in the code, where it cannot drift:
 | Why did *this* command prompt? | `~/.claude/tools/why-prompt.py '<the exact command>'`, pinned by `--test` |
 | How does a prompt get decided at all? | `claude/README.md` in the dotfiles repo (not installed into `~/.claude`) |
 | Site-specific grants | `~/.claude/hooks/local_grants.py`, untracked — never put a local path or an internal name in the guard itself |
+| What pins the local grants? | `~/.claude/hooks/local-grants-cases.py`, also untracked; `local_grants.py --test` runs it, and so does the guard's `--test` |
 
 ## Threat model
 
