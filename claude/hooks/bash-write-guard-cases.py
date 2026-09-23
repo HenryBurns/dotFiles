@@ -1303,6 +1303,14 @@ CASES = [
     # Single quotes do not expand arithmetic, so it stays literal text.
     ("silent", "grep -c '$((1+1))' /workspace/f"),
 
+    # Claude Code prompts yes/no for `cd X && git ...` even when every segment
+    # matches a rule; `cd X && ls` does not prompt, so only the git form is granted.
+    ("allow",  "cd /workspace && git status"),
+    ("allow",  "cd /workspace/sub && git log --oneline -5"),
+    ("silent", "cd /workspace && ls"),
+    ("silent", "git status"),
+    ("ask",    "cd /workspace && git branch -D topic"),
+
     # An absolute `cd` makes a following relative COMMAND word resolvable, so
     # an allowlisted script invoked as ./x is recognised as the same script.
     ("allow",  "cd /opt/bin; ./tool.py --test"),
@@ -1390,6 +1398,14 @@ OVER_ASKS = [
     # Refused with toolDenialKind=permission-rule while `echo "$HOME"` runs, so
     # the braces alone decide it -- and a guard allow does not override this.
     ("silent", 'echo "${HOME}"'),
+    # Past MAX_BINDING_VARIANTS the loop words are no longer substituted into
+    # the substitution body, so `$n` stays literal and every check that reads
+    # an argument sees an unresolved `$`. The same command is allowed at 8
+    # words and asks at 9 -- the width decides, not the command. Widening the
+    # cap moves the boundary; it cannot make either verdict unsafe, because the
+    # fallback is the UNEXPANDED text and expanding only ever reveals writes.
+    ("allow",  "for n in 1 2 3 4 5 6 7 8; do r=$(sed -n \"$n p\" f.txt); done"),
+    ("ask",    "for n in 1 2 3 4 5 6 7 8 9; do r=$(sed -n \"$n p\" f.txt); done"),
 ]
 
 

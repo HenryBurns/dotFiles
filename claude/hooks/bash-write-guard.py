@@ -2973,7 +2973,12 @@ def analyze(text, prefix, deny, depth, roots=()):
     if commands is None:
         return False, False
 
-    needs_grant = saw_control or unrolled or bool(spans)
+    # Claude Code prompts for `cd X && git ...` even when every segment matches
+    # a rule, and offers no "always allow". `cd X && ls` does not prompt.
+    cd_then_git = (any(seg and seg[0] == "cd" for seg in commands)
+                   and any(seg and seg[0] == "git" for seg in commands))
+
+    needs_grant = saw_control or unrolled or bool(spans) or cd_then_git
     for segment in commands:
         if not segment:
             continue

@@ -118,9 +118,6 @@
       "Write(~/.claude/projects/**/memory/**)"
     ]
   },
-  "worktree": {
-    "baseRef": "head"
-  },
   "hooks": {
     "PreToolUse": [
       {
@@ -152,6 +149,9 @@
         ]
       }
     ]
+  },
+  "worktree": {
+    "baseRef": "head"
   },
   "theme": "dark"
 }
