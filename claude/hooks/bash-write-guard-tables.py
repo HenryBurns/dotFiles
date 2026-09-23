@@ -399,3 +399,48 @@ MAN_READ_BOOL_FLAGS = frozenset({
 MAN_READ_VALUE_FLAGS = frozenset({
     "-s", "-S", "--sections", "-e", "--extension", "-L", "--locale",
     "-m", "--systems", "-M", "--manpath", "-E", "--encoding"})
+
+# dmesg reads the kernel ring buffer (`dmesg --help`, util-linux 2.37). Withheld:
+# -c/--read-clear and -C/--clear empty the buffer, and -n/--console-level,
+# -D/--console-off and -E/--console-on change what reaches the console. dmesg
+# takes no operand, so the exemption also refuses any positional.
+DMESG_READ_BOOL_FLAGS = frozenset({
+    "-H", "--human", "-k", "--kernel", "-P", "--nopager",
+    "-p", "--force-prefix", "-r", "--raw", "--noescape", "-S", "--syslog",
+    "-u", "--userspace", "-w", "--follow", "-W", "--follow-new",
+    "-x", "--decode", "-d", "--show-delta", "-e", "--reltime",
+    "-T", "--ctime", "-t", "--notime", "-h", "--help", "-V", "--version"})
+DMESG_READ_VALUE_FLAGS = frozenset({
+    "-F", "--file", "-f", "--facility", "-l", "--level",
+    "-s", "--buffer-size", "--time-format", "--since", "--until"})
+DMESG_READ_OPTIONAL_FLAGS = frozenset({"-L", "--color"})
+
+# journalctl queries the journal (`journalctl --help`, systemd 249). Its
+# Commands section also acts: --vacuum-*, --rotate, --flush, --sync,
+# --relinquish-var and --smart-relinquish-var change the journal itself,
+# --update-catalog rewrites the catalog, --setup-keys (with --force and
+# --interval) generates sealing keys, and --cursor-file rewrites the file it
+# names. Positionals are MATCHES (`_PID=1`), which only filter.
+JOURNALCTL_READ_BOOL_FLAGS = frozenset({
+    "--system", "--user", "--show-cursor", "--list-boots", "-k", "--dmesg",
+    "-e", "--pager-end", "-f", "--follow", "--no-tail", "-r", "--reverse",
+    "--utc", "-x", "--catalog", "--no-full", "-a", "--all", "-q", "--quiet",
+    "--no-pager", "--no-hostname", "-m", "--merge", "-h", "--help",
+    "--version", "-N", "--fields", "--disk-usage", "--verify", "--header",
+    "--list-catalog", "--dump-catalog"})
+JOURNALCTL_READ_VALUE_FLAGS = frozenset({
+    "-M", "--machine", "-S", "--since", "-U", "--until", "-c", "--cursor",
+    "--after-cursor", "-u", "--unit", "--user-unit", "-t", "--identifier",
+    "-p", "--priority", "--facility", "-g", "--grep", "-o", "--output",
+    "--output-fields", "-D", "--directory", "--file", "--root", "--image",
+    "--namespace", "--verify-key", "-F", "--field"})
+# Optional values are taken attached, except that -b and -n also peek at the
+# next word when it is a boot offset or a count: `journalctl -b -1`.
+JOURNALCTL_READ_OPTIONAL_FLAGS = frozenset({
+    "-b", "--boot", "-n", "--lines", "--case-sensitive"})
+JOURNALCTL_PEEK = {
+    "-b": re.compile(r"[+-]?\d+|[0-9a-fA-F]{32}"),
+    "--boot": re.compile(r"[+-]?\d+|[0-9a-fA-F]{32}"),
+    "-n": re.compile(r"\+?\d+|all"),
+    "--lines": re.compile(r"\+?\d+|all"),
+}

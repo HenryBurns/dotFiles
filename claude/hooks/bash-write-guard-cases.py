@@ -607,6 +607,45 @@ CASES = [
     ("ask",    "man --frobnicate mount"),       # unknown flag may take a value
     ("ask",    "man -s $S open"),               # unreadable: could BE a flag
 
+    # dmesg reads the kernel ring buffer, but -c/-C clear it and -n/-D/-E change
+    # console logging. Vouched rather than ruled: Bash(dmesg:*) would admit them.
+    ("allow",  "dmesg"),
+    ("allow",  "dmesg -T"),
+    ("allow",  "dmesg --level err,warn -T"),
+    ("allow",  "dmesg --since=-1h"),
+    ("allow",  'dmesg -T 2>&1 | grep -iE "oom|killed process|eth" | tail -30'),
+    ("ask",    "dmesg -c"),                     # reads, then clears the buffer
+    ("ask",    "dmesg --read-clear"),
+    ("ask",    "dmesg -C"),
+    ("ask",    "dmesg -n 1"),                   # sets the console log level
+    ("ask",    "dmesg -D"),
+    ("allow",  "dmesg -TH"),                    # a bundle is read letter by letter
+    ("ask",    "dmesg -Tc"),                    # ...so the clear inside it is seen
+    ("ask",    "dmesg stray"),                  # takes no operand at all
+    ("ask",    "dmesg -l $L"),                  # unreadable: could BE a flag
+
+    # journalctl queries the journal, but its Commands section also vacuums,
+    # rotates and flushes it, and --cursor-file rewrites the file it names.
+    ("allow",  "journalctl -u sshd --no-pager"),
+    ("allow",  'journalctl --since "-2h" -p warning --no-pager 2>&1 | tail -60'),
+    ("allow",  "journalctl -b -1 -k"),
+    ("allow",  "journalctl -n 50 --no-pager"),     # -n peeks at a number
+    ("allow",  "journalctl -n50"),
+    ("allow",  "journalctl -xe"),
+    ("allow",  "journalctl --lines=50 -o json"),
+    ("allow",  "journalctl _PID=1 --disk-usage"),
+    ("ask",    "journalctl --vacuum-time=2d"),
+    ("ask",    "journalctl --vacuum-size 1G"),
+    ("ask",    "journalctl --rotate"),
+    ("ask",    "journalctl --flush"),
+    ("ask",    "journalctl --cursor-file=/tmp/c"),
+    ("ask",    "journalctl --setup-keys"),
+    # -n peeks only at a number, so this vacuums. Reading -n as taking any next
+    # word would have waved it through.
+    ("ask",    "journalctl -n --vacuum-time=1s"),
+    ("ask",    "journalctl -- --vacuum-time=1s"),  # `--` is not vetted
+    ("ask",    "journalctl -u $U"),             # unreadable: could BE a flag
+
     # mapfile reads a file into an array, which is a read -- but -C names a
     # callback command run every -c lines, so it is a command runner like the
     # rest, and no read-only form is worth an exemption for a builtin this

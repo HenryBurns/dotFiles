@@ -172,6 +172,8 @@ ALWAYS_ASK = {
     "docker": "runs a container with host access, or execs into a running one",
     "mount": "attaches or moves a filesystem, or remounts one writable",
     "man": "can hand the page to a pager, browser or formatter of your choosing",
+    "dmesg": "clears the kernel ring buffer or changes console logging",
+    "journalctl": "vacuums, rotates or flushes the journal, or rewrites a cursor file",
     # -- privilege escalation ------------------------------------------------
     "sudo": "runs another command as another user",
     "doas": "runs another command as another user",
@@ -190,7 +192,7 @@ ALWAYS_ASK = {
 # here too. The exception is a form a rule CAN name, like `Bash(command -v:*)`.
 VOUCHED_NOT_RULED = frozenset({"set", "ssh", "tmux", "date",
                                "python", "python3", "claude", "env", "mount",
-                               "man"})
+                               "man", "dmesg", "journalctl"})
 
 # ---------------------------------------------------------------------------
 # Control-flow recognition
@@ -550,6 +552,73 @@ def man_reads(args):
     """
     return vetted_flag_walk(args, T.MAN_READ_BOOL_FLAGS,
                             T.MAN_READ_VALUE_FLAGS) is not None
+
+
+def short_flag_walk(args, bool_flags, value_flags, optional_flags,
+                    peek=None):
+    """How many positionals `args` holds, or None if a flag was not vetted.
+
+    For getopt-style tools where short flags bundle (`-Tx`) and some values are
+    optional, which vetted_flag_walk treats as unvetted. A bundle is read letter
+    by letter, so `-Tc` is refused for its `c`. An optional value is taken only
+    attached, or from the next word when `peek` matches it.
+    """
+    peek = peek or {}
+    positionals, index = 0, 0
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if unreadable_argument(arg):
+            return None
+        if not arg.startswith("-") or arg == "-":
+            positionals += 1
+            continue
+        if arg.startswith("--"):
+            base, attached = arg.split("=", 1)[0], "=" in arg
+            letters = [base]
+        else:
+            letters = ["-" + letter for letter in arg[1:]]
+            attached = False
+        for position, flag in enumerate(letters):
+            rest_of_bundle = position + 1 < len(letters)
+            if flag in bool_flags and not attached:
+                continue
+            if flag in value_flags:
+                if attached or rest_of_bundle:
+                    break               # --x=V, or -xV with V the remainder
+                if index >= len(args) or unreadable_argument(args[index]):
+                    return None
+                index += 1
+                break
+            if flag in optional_flags:
+                if attached or rest_of_bundle:
+                    break
+                pattern = peek.get(flag)
+                if (pattern and index < len(args)
+                        and pattern.fullmatch(args[index])):
+                    index += 1
+                break
+            return None
+    return positionals
+
+
+def dmesg_reads(args):
+    """True for a `dmesg` that prints the ring buffer without clearing it."""
+    return short_flag_walk(args, T.DMESG_READ_BOOL_FLAGS,
+                           T.DMESG_READ_VALUE_FLAGS,
+                           T.DMESG_READ_OPTIONAL_FLAGS) == 0
+
+
+def journalctl_reads(args):
+    """True for a `journalctl` that queries rather than maintains the journal.
+
+    Positionals are matches such as `_PID=1`, which only filter, so any number
+    is fine; the Commands that vacuum, rotate or seal are absent from the tables.
+    """
+    return short_flag_walk(args, T.JOURNALCTL_READ_BOOL_FLAGS,
+                           T.JOURNALCTL_READ_VALUE_FLAGS,
+                           T.JOURNALCTL_READ_OPTIONAL_FLAGS,
+                           T.JOURNALCTL_PEEK) is not None
 
 
 def docker_reads(args):
@@ -1673,6 +1742,8 @@ ASK_EXEMPTIONS = {
     "docker": lambda rest, depth, rules: docker_reads(rest),
     "mount": lambda rest, depth, rules: mount_reads(rest),
     "man": lambda rest, depth, rules: man_reads(rest),
+    "dmesg": lambda rest, depth, rules: dmesg_reads(rest),
+    "journalctl": lambda rest, depth, rules: journalctl_reads(rest),
 }
 
 
@@ -3287,12 +3358,20 @@ def _selftest():
               f"not 'ask'. Something reads T at module scope, so the import "
               f"dies before _decide() can turn it into a prompt.")
 
+    # A machine's own grants may carry their own cases; run those too, since a
+    # grant that stopped matching looks exactly like one that was never added.
+    local_failed = False
     if local_error:
         print(f"local_grants.py FAILS TO RUN -- every local grant is silently "
               f"lost: {local_error}")
     elif had_local:
         print("note: local_grants.py loads and runs; disabled for the cases above")
-    return 1 if failed or local_error or wrapper_errors \
+        grant = load_local_grants()
+        selftest = grant and grant.__globals__.get("_selftest")
+        if selftest is not None:
+            print("local_grants.py cases: ", end="", flush=True)
+            local_failed = selftest() != 0
+    return 1 if failed or local_error or local_failed or wrapper_errors \
         or not fail_closed or not tables_closed else 0
 
 

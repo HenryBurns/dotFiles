@@ -51,6 +51,7 @@
       "Bash(hostname:*)",
       "Bash(uptime:*)",
       "Bash(who:*)",
+      "Bash(last:*)",
       "Bash(id:*)",
       "Bash(tr:*)",
       "Bash(paste:*)",
