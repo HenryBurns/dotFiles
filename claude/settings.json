@@ -112,7 +112,13 @@
       "Bash(realpath:*)",
       "Bash(basename:*)",
       "Bash(dirname:*)",
-      "Bash(file:*)"
+      "Bash(file:*)",
+      "Bash(readelf:*)",
+      "Bash(objdump:*)",
+      "Bash(nm:*)",
+      "Bash(strings:*)",
+      "Bash(size:*)",
+      "Bash(addr2line:*)"
     ],
     "ask": [
       "Edit(~/.claude/projects/**/memory/**)",
