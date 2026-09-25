@@ -1404,6 +1404,46 @@ CASES = [
     # A write still asks: being our own tool says the file is read-only when
     # run as intended, not that any command naming it is.
     ("ask",    "sed -i s/a/b/ ~/.claude/hooks/review-text-gate.py"),
+    # `--flag="$(...)"` stays ONE word, so the substitution can only ever be
+    # that flag's value -- it cannot split off a second, write-capable flag.
+    # Bash does not re-scan expansion output for quotes, substitutions or
+    # backticks, so a `"` or a nested `$(...)` in the value is inert data, not
+    # syntax. Splitting is the whole hazard, and quoting is what prevents it.
+    ('allow',  'git log --format=%h -1 --contains="$(cat /tmp/payload)"'),
+    ('allow',  'sort --key="$(cat /tmp/payload)" f'),
+    # UNQUOTED, the result IS word-split, so the attached form guarantees
+    # nothing: a value of `HEAD --output=/tmp/x` yields `--contains=HEAD` AND
+    # `--output=/tmp/x`, and git creates the file before failing on the first.
+    # Measured end to end -- the guard allowed it and the file appeared.
+    ("ask",    "git log --format=%h -1 --contains=$(cat /tmp/payload)"),
+    ("ask",    "sort --key=$(cat /tmp/payload) f"),
+    # The same substitution as a BARE positional has no such guarantee either:
+    # the whole word could be `--output=/tmp/x`.
+    ("ask",    "git branch -r --contains $(cat /tmp/payload)"),
+    # A placeholder mid-token that is QUOTED stays an address, not a flag --
+    # the long-standing `sed -n "1,$(echo 5)p"` shape must keep working.
+    ('allow',  'sed -n "1,$(echo 5)p" f'),
+
+    # sed is a language too, and `w` is its write -- both spellings measured to
+    # create a file. -i is a different check: these write a file OTHER than the
+    # one being edited, so -i alone never saw them.
+    ("ask",    "sed -n 'w /tmp/out' f"),
+    ("ask",    "sed -n 's/foo/bar/w /tmp/out' f"),
+    ("ask",    "sed 's|/usr/bin|/opt/bin|w /tmp/x' f"),
+    ("ask",    "sed 's/a/b/;w /tmp/x' f"),
+    # -f puts the script in a file this hook never opens, so the check above
+    # cannot see it. Refused for the same reason as `awk -f`.
+    ("ask",    "sed -f /tmp/script.sed f"),
+    # A substitution is NOT a write: without -i or w, sed prints to stdout and
+    # leaves the input byte-identical (verified by md5). These must not ask.
+    # The middle one is why SED_WRITE cannot use a character class for the
+    # delimiter -- see the tables file -- since a `w` anywhere in the text
+    # would otherwise be read as the write flag of an earlier s///.
+    ("silent", "sed 's/warning/note/' f"),
+    ("silent", "sed 's/window/pane/;s/wide/narrow/' f"),
+    ("silent", "sed 's/a/w/' f"),
+    ("silent", "sed -e 's/wibble/wobble/g' f"),
+    ("silent", "sed -n 's/.*\\(ws\\)/\\1/p' f"),
     # A bare name is a PATH lookup, not a relative path -- rewriting it would
     # invent a file that bash never looks for.
     ("silent", "cd /opt/bin; tool.py --test"),
@@ -1437,6 +1477,10 @@ OVER_ASKS = [
     # Refused with toolDenialKind=permission-rule while `echo "$HOME"` runs, so
     # the braces alone decide it -- and a guard allow does not override this.
     ("silent", 'echo "${HOME}"'),
+    # Same family: an unquoted git `@{u}` in a compound is refused, while the
+    # rev-list alone, or `'@{u}...HEAD'` quoted, runs. Bash does not expand
+    # `@{u}` (no comma, no `..`), so the prompt is Claude Code's, not the guard's.
+    ("silent", "echo hi && git rev-list --left-right --count @{u}...HEAD"),
     # Past MAX_BINDING_VARIANTS the loop words are no longer substituted into
     # the substitution body, so `$n` stays literal and every check that reads
     # an argument sees an unresolved `$`. The same command is allowed at 8

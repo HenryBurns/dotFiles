@@ -43,6 +43,19 @@ FIND_WRITE_FLAGS = {
 }
 # sed short flags bundle, and -i takes an optional suffix: -i -i.bak -ni -sni
 SED_INPLACE = re.compile(r"^-[A-Za-z]*i|^--in-place")
+# sed is a small language too, and `w` is its write. Two spellings, both
+# measured to create a file: the `w FILE` command (`sed -n 'w /tmp/x' f`) and
+# the `w` flag on s/// (`sed 's/a/b/w /tmp/x' f`). A `w` inside a regex or a
+# replacement is ordinary text, so this anchors on a command position -- start
+# of script, after a `;` or a newline -- or on the flag directly after the
+# closing delimiter of a substitution. -i is a separate check: this one fires
+# for a script that writes a DIFFERENT file than the one being edited.
+# The delimiter exclusion is a tempered dot -- `(?:\\.|(?!\1).)*` -- NOT a
+# character class: Python has no backreference inside `[...]`, so `[^\1\\]`
+# reads as "not a literal 1", the match runs past the `;`, and
+# `s/window/pane/;s/wide/narrow/` reports a write it never makes.
+SED_WRITE = re.compile(r"(?:^|[;\n{])\s*\d*\s*~?\s*w\s"
+                       r"|s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1[a-zA-Z]*w")
 # Flags that name a file the command WRITES, per tool, so every spelling one
 # tool accepts is reviewable beside the others. They are all read by the same
 # extractor, which is the point: --output-directory was missed for months

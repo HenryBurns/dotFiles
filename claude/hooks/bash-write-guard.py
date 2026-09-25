@@ -916,7 +916,7 @@ def _consume_bodies(text, index, pending):
         spans = substitution_spans(body)
         if spans is None:
             raise ValueError("unreadable expansion in a heredoc body")
-        rescued.extend(body[start:end] for start, end in spans)
+        rescued.extend(body[span[0]:span[1]] for span in spans)
     return index, rescued
 
 
@@ -1780,6 +1780,15 @@ def segment_reasons(segment, literals=frozenset(), depth=0, rules=None):
         if not sandboxed_targets(sed_targets(rest) or []):
             reasons.append("sed edits files in place")
 
+    if name == "sed":
+        # Same split as awk: read the script when it is on the command line,
+        # refuse it when -f puts it in a file this hook never opens.
+        if any(T.SED_WRITE.search(t) for t in rest):
+            reasons.append("sed script writes a file with its w command")
+        elif any(t == "-f" or t == "--file" or t.startswith("--file=")
+                 or (t.startswith("-f") and len(t) > 2) for t in rest):
+            reasons.append("sed -f runs a script file the guard cannot inspect")
+
     if name == "uniq" and uniq_writes(rest):
         reasons.append("uniq overwrites its second argument")
 
@@ -1826,7 +1835,14 @@ def segment_reasons(segment, literals=frozenset(), depth=0, rules=None):
     if name in T.FLAG_SENSITIVE or git_sub:
         # Leading only, deliberately not literal_path's test: a placeholder
         # mid-token is an address, as in `sed -n "1,$(echo 5)p" f`.
-        if any((a.startswith("$") or a.startswith(SUBST_PLACEHOLDER))
+        #
+        # An UNQUOTED substitution is the exception, wherever it sits in the
+        # token. Its result is word-split, so `--contains=$(cat f)` over a
+        # value holding a space yields `--contains=head` AND `--output=/tmp/x`
+        # -- a live flag the attached form was assumed to rule out. Quoted, the
+        # token stays one word and keeps the old, narrower test.
+        if any((a.startswith("$") or a.startswith(SUBST_PLACEHOLDER)
+                or BARE_SUBST_PLACEHOLDER in a)
                and a not in literals
                for a in flag_args):
             reasons.append(f"{name} takes an argument from an expansion the "
@@ -2399,7 +2415,7 @@ def substitution_variants(command, spans, which):
     Every value is checked -- `for f in a.txt -i` must not pass on its first
     word -- and only bindings from the prefix apply.
     """
-    start, end = spans[which]
+    start, end = spans[which][0], spans[which][1]
     inner = command[start + 2:end - 1]
     # From the stripped command truncated at this span: slicing the raw text
     # cuts mid-quote -- `echo "$(...)"` leaves a dangling `"` -- and tokenize
@@ -2839,6 +2855,11 @@ def segment_permitted(segment, prefix, deny):
 
 
 SUBST_PLACEHOLDER = "__CLAUDE_SUBST__"
+# An unquoted substitution, whose result the shell word-splits. Deliberately
+# CONTAINS the plain placeholder as a prefix: every existing
+# `SUBST_PLACEHOLDER in token` and `.startswith(SUBST_PLACEHOLDER)` test keeps
+# matching, so this only ever adds a distinction where one is asked for.
+BARE_SUBST_PLACEHOLDER = SUBST_PLACEHOLDER + "BARE__"
 MAX_SUBST_DEPTH = 2
 
 
@@ -2985,7 +3006,9 @@ def substitution_spans(text):
             depth -= 1
             quote = quote_stack.pop()
             if depth == 0:
-                spans.append((start, index + 1))
+                # `quote` was just restored to the state OUTSIDE the span, so
+                # it says whether the shell will word-split this result.
+                spans.append((start, index + 1, quote == '"'))
                 start = None
         index += 1
 
@@ -2995,9 +3018,18 @@ def substitution_spans(text):
 
 
 def strip_substitutions(text, spans):
-    """Replace each span with a placeholder so the outer command tokenizes."""
-    for start, end in reversed(spans):
-        text = text[:start] + SUBST_PLACEHOLDER + text[end:]
+    """Replace each span with a placeholder so the outer command tokenizes.
+
+    An UNQUOTED span gets a distinct placeholder. Its result is word-split by
+    the shell, so `--flag=$(...)` can become `--flag=head` plus a second word
+    that is a live flag -- see BARE_SUBST_PLACEHOLDER. A quoted span stays one
+    word and keeps the plain placeholder.
+    """
+    for span in reversed(spans):
+        start, end = span[0], span[1]
+        quoted = span[2] if len(span) > 2 else True
+        mark = SUBST_PLACEHOLDER if quoted else BARE_SUBST_PLACEHOLDER
+        text = text[:start] + mark + text[end:]
     return text
 
 
