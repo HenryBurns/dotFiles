@@ -1443,6 +1443,14 @@ CASES = [
     ("silent", "sed 's/window/pane/;s/wide/narrow/' f"),
     ("silent", "sed 's/a/w/' f"),
     ("silent", "sed -e 's/wibble/wobble/g' f"),
+    # The check must read the SCRIPT, not every argument. A path is full of
+    # slashes, so `/s<x>/<y>/w` inside one parses as a substitution carrying
+    # the w flag and asks on a pure read -- measured on the guard's own
+    # tools directory, which prompted every time it was read.
+    ("silent", "sed -n '1,5p' /workspace/logs/a/b/why.py"),
+    ("silent", "sed -n '180,250p;284,394p' /workspace/logs/bin/tools/wrap.py"),
+    # Still caught when the same text really is the script.
+    ("ask",    "sed -n 's/tools/w/w /tmp/x' f"),
     ("silent", "sed -n 's/.*\\(ws\\)/\\1/p' f"),
     # A bare name is a PATH lookup, not a relative path -- rewriting it would
     # invent a file that bash never looks for.
@@ -1520,6 +1528,26 @@ WHY_PROMPT_CASES = [
     # touch is worse than reporting none.
     ("unknown var is not guessed at",
      ["ls", "-l", "$MYSTERY"], {}, []),
+]
+
+
+# why-prompt.py's spelling hints: (label, command word, expected hint kind).
+# "NO RULE MATCHES" reads the same whether nothing could ever match or the
+# same file is allowlisted under another spelling, and those want opposite
+# fixes. The kinds are "relative", "alias" and None -- content is not pinned,
+# only which explanation is offered, so the wording stays free to improve.
+#
+# A rule is text and a grant is a realpath, which is why the cwd matters: the
+# same script clears written one way and prompts written another.
+SPELLING_HINT_CASES = [
+    ("bare name is resolved on PATH, not by cwd", "ruff", None),
+    ("flag is not a path", "--check", None),
+    ("relative with a slash is cwd-dependent", "claude/sync.py", "relative"),
+    ("explicitly relative too", "./sync.py", "relative"),
+    ("absolute with no rule at all", "/elsewhere/tool.py", None),
+    # The tilde form is the published spelling; the same file spelled from its
+    # real mount point matches no rule, and the reader cannot see why.
+    ("absolute twin of a tilde rule", "~/.claude/tools/why-prompt.py", None),
 ]
 
 

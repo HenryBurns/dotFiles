@@ -1176,6 +1176,48 @@ def sed_targets(args):
     return positionals[1:]          # the first positional is the script
 
 
+def sed_scripts(args):
+    """The script text sed will run, or None if the parse is not provable.
+
+    The write checks have to read the script and nothing else. An input path
+    is mostly slashes, so `.../s<x>/<y>/w...` inside one parses as a
+    substitution carrying the `w` flag -- scanning every argument asked on
+    plain reads of this guard's own tools directory. None keeps the caller in
+    the asking direction, since an unreadable parse is not a proof of no write.
+    """
+    scripts, from_flag, index = [], False, 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            rest = args[index + 1:]
+            if not from_flag and rest:
+                scripts.append(rest[0])
+            break
+        if token.startswith("-") and token != "-":
+            base, equals, value = token.partition("=")
+            if base in SED_VALUE_FLAGS:
+                if base in SED_SCRIPT_FLAGS:
+                    from_flag = True
+                    # -f names a file this hook never opens; its caller
+                    # refuses that separately, so only -e carries text here.
+                    if base in ("-e", "--expression"):
+                        if equals:
+                            scripts.append(value)
+                        elif index + 1 < len(args):
+                            scripts.append(args[index + 1])
+                index += 1 if equals else 2
+            elif base in SED_BOOL_FLAGS or T.SED_INPLACE.match(token):
+                index += 1
+            else:
+                return None
+            continue
+        if not from_flag:
+            scripts.append(token)   # the first positional is the script
+            return scripts
+        break
+    return scripts
+
+
 # tee writes every positional. `-` is stdout, and no tee flag takes a separate
 # value (--output-error carries its mode with `=`), so the parse is simple.
 TEE_BOOL_FLAGS = {"-a", "--append", "-i", "--ignore-interrupts", "-p",
@@ -1783,7 +1825,11 @@ def segment_reasons(segment, literals=frozenset(), depth=0, rules=None):
     if name == "sed":
         # Same split as awk: read the script when it is on the command line,
         # refuse it when -f puts it in a file this hook never opens.
-        if any(T.SED_WRITE.search(t) for t in rest):
+        scripts = sed_scripts(rest)
+        if scripts is None:
+            reasons.append("sed flags the guard cannot parse, so its script "
+                           "cannot be read")
+        elif any(T.SED_WRITE.search(s) for s in scripts):
             reasons.append("sed script writes a file with its w command")
         elif any(t == "-f" or t == "--file" or t.startswith("--file=")
                  or (t.startswith("-f") and len(t) > 2) for t in rest):

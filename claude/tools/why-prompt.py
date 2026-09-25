@@ -281,6 +281,35 @@ def match(text, rules):
     return None, None
 
 
+def spelling_hint(word, cwd, prefix):
+    """Why a command word missed, when the FILE it names would not have.
+
+    Both gates compare text, not inodes, while a local grant compares a
+    realpath. So the same program clears or prompts depending on how it is
+    written, and "NO RULE MATCHES" reads identically in every case. These are
+    the two spellings measured to cost a prompt on a command that was already
+    permitted under another name.
+    """
+    if word.startswith("-") or "/" not in word:
+        return None            # a bare name is resolved on PATH, not by cwd
+    resolved = os.path.realpath(os.path.expanduser(word))
+    if not word.startswith("/") and not word.startswith("~"):
+        return (f"relative to the CURRENT directory -- here that is "
+                f"{resolved}.\n     Which directory that is depends on the cwd "
+                f"and on any earlier `cd`,\n     so a grant matching on a real "
+                f"path cannot prove what it names.\n     Spell it absolutely, "
+                f"or with ~, and this becomes decidable.")
+    # Absolute and still unmatched: a rule for the same file under a different
+    # spelling is the common cause, and only the tilde form is published.
+    for pattern, source in prefix:
+        if (pattern.startswith("~") or pattern.startswith("/")) and \
+                os.path.realpath(os.path.expanduser(pattern)) == resolved:
+            return (f"the SAME file has a rule, spelled Bash({pattern}:*) "
+                    f"[{source}].\n     Prefix rules match text, not inodes. "
+                    f"Write it as {pattern}.")
+    return None
+
+
 def main():
     if "--test" in sys.argv[1:]:
         return 1 if selftest() else 0
@@ -340,6 +369,33 @@ def main():
                 verdict = "NO RULE MATCHES"
                 blockers.append(f"{segment[0]}: no rule")
         print(f"{shown:<{width}}  {verdict}")
+
+        if not hit and not denied:
+            # An interpreter hides the real program in argv[1]: `python3 x.py`
+            # matches no rule for x.py and reaches no grant keyed on it.
+            word = segment[0]
+            # The guard's own table, not a second copy that would drift.
+            if len(segment) > 1 and os.path.basename(word) in guard.INTERPRETERS:
+                # -c takes the program as its VALUE, so the next word is code,
+                # not a path. Naming it as a script would send the reader
+                # looking for a file that does not exist.
+                script = None
+                for position, token in enumerate(segment[1:]):
+                    if token in ("-c", "-m"):
+                        break
+                    if not token.startswith("-"):
+                        script = token
+                        break
+                if script:
+                    print(f"{'':<{width}}  ^ runs {script} via {word}. The "
+                          f"rules and any grant key on the\n     COMMAND word, "
+                          f"which is {word} here, so neither can reach it.\n"
+                          f"     Invoke the script directly if it is "
+                          f"executable.")
+                    word = script
+            hint = spelling_hint(word, cwd, prefix)
+            if hint:
+                print(f"{'':<{width}}  ^ {hint}")
 
         stray = strays_for(segment, env, roots, guard)
         if stray:
