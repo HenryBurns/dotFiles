@@ -30,7 +30,8 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from hook_triggers import acknowledged, commits_all, triggered  # noqa: E402
+from hook_triggers import (acknowledged, commit_cwd,  # noqa: E402
+                           commits_all, triggered)
 
 # (max lines changed, max body lines). Read as: up to this size, that many.
 LIMITS = [(20, 3), (100, 4), (500, 6), (10 ** 9, 7)]
@@ -179,7 +180,11 @@ def decide():
     if not command.strip() or acknowledged(command) or not triggered(command):
         return 0
 
-    cwd = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    # A `cd` on the same line decides which repo this commits in, and it is
+    # often not the session's. Measuring the wrong tree reports a clean one as
+    # a 0-line change, which is the tightest budget there is.
+    cwd = commit_cwd(command,
+                     os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
     if subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
                       cwd=cwd, capture_output=True).returncode != 0:
         return 0
@@ -289,6 +294,25 @@ def _selftest():
         check("--all adds unstaged", size("git commit --all"), 35)
         # A bare `-m` is not `-a`: the letter has to be a real short flag.
         check("-m alone is not -a", size("git commit"), 5)
+
+    # The repo a command commits in is decided by a `cd` on the line, not by
+    # the session's project dir. Reading the wrong tree reported a clean one as
+    # a 0-line change and refused proportionate messages -- measured twice, on
+    # this repo's own commits.
+    check("cd picks the repo",
+          commit_cwd("cd /workspace/repo && git commit -m s", "DEF"),
+          "/workspace/repo")
+    check("cd before add still counts",
+          commit_cwd("cd /workspace/repo && git add f && git commit -m s", "DEF"),
+          "/workspace/repo")
+    check("no cd keeps default",
+          commit_cwd("git commit -m s", "DEF"), "DEF")
+    # A cd in a pipeline runs in a subshell, so the commit never sees it.
+    check("subshell cd ignored",
+          commit_cwd("cd /a | cd /b; git commit -m s", "DEF"), "DEF")
+    # An unreadable target is not a directory anyone has read.
+    check("expansion not tracked",
+          commit_cwd("cd $HOME && git commit -m s", "DEF"), "DEF")
 
     check("rev found", revision_in("post-review c7ad8c929c2a"), "c7ad8c929c2a")
     check("HEAD found", revision_in("post-review HEAD"), "HEAD")

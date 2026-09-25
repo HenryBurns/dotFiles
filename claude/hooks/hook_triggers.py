@@ -13,9 +13,28 @@ commit time, so nothing is staged while the hook runs. One implementation,
 tested once.
 """
 
+import importlib.util
 import os
 import re
 import shlex
+
+_GUARD = None
+
+
+def _load_guard():
+    """The write guard module, loaded once per process.
+
+    A hyphenated filename cannot be imported by name, and these gates run as
+    their own processes, so the cost lands once each rather than per command.
+    """
+    global _GUARD
+    if _GUARD is None:
+        path = os.path.join(_HERE, "bash-write-guard.py")
+        spec = importlib.util.spec_from_file_location("_bash_write_guard", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _GUARD = module
+    return _GUARD
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 TRIGGER_FILE = os.path.join(_HERE, "comment-ratio-triggers")
@@ -96,6 +115,40 @@ def split_tokens(text):
         return shlex.split(text)
     except ValueError:
         return text.split()
+
+
+def commit_cwd(command, default):
+    """The directory the committing command runs in, following a leading `cd`.
+
+    Both gates measured the SESSION's project dir, so a commit in another repo
+    was read against a tree with nothing staged. The walk is the write guard's
+    `expand_cd`, not a second parser: it already knows which targets are
+    readable and that a cd in a pipeline is undone at the statement end.
+    """
+    try:
+        guard = _load_guard()
+        tokens = guard.tokenize(command)
+    except Exception:
+        return default
+    m = re.search(GIT_COMMIT, command)
+    if not m:
+        return default
+    # The token index of the commit itself: count `git` occurrences up to the
+    # match so a compound naming git twice stops at the right one.
+    before = command[:m.start()]
+    want = before.count("git ") + 1
+    seen, stop = 0, len(tokens)
+    for index, tok in enumerate(tokens):
+        if tok == "git":
+            seen += 1
+            if seen == want:
+                stop = index
+                break
+    try:
+        found = guard.expand_cd(tokens, stop=stop)
+    except Exception:
+        return default
+    return found or default
 
 
 def commits_all(command):

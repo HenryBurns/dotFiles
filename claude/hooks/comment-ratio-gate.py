@@ -33,8 +33,9 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from hook_triggers import (MARKER, acknowledged, commit_scope,  # noqa: E402
-                           commits_all, split_tokens, trigger_match, triggered)
+from hook_triggers import (MARKER, acknowledged, commit_cwd,  # noqa: E402
+                           commit_scope, commits_all, split_tokens,
+                           trigger_match, triggered)
 
 TOOL = os.path.expanduser("~/.claude/tools/comment-ratio.py")
 
@@ -177,7 +178,10 @@ def decide():
     if not os.path.exists(TOOL):
         return 0
 
-    cwd = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    # Same reason as the message gate: a `cd` on the line, not the session,
+    # decides which repo is being committed to.
+    cwd = commit_cwd(command,
+                     os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
     inside = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
                             cwd=cwd, capture_output=True, text=True)
     if inside.returncode != 0:

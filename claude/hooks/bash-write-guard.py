@@ -2324,11 +2324,14 @@ def script_still_pending(token):
             and all(c in T.PYTHON_SAFE_FLAG_LETTERS for c in token[1:]))
 
 
-def expand_cd(tokens):
+def expand_cd(tokens, stop=None):
     """(tokens, changed) with relative command words resolved against `cd`.
 
     Command words and an interpreter's script only: resolving argument paths
     would let in_sandbox prove a relative write target disposable.
+
+    With `stop`, returns the cwd in force at that token index instead, so the
+    commit gates find the repo a command commits in without a second cd parser.
     """
     out, cwd, changed = [], None, False
     expect_command, index, total = True, 0, len(tokens)
@@ -2338,6 +2341,9 @@ def expand_cd(tokens):
 
     while index < total:
         token = tokens[index]
+
+        if stop is not None and index >= stop:
+            return cwd
 
         if expect_command and token == "cd":
             target = tokens[index + 1] if index + 1 < total else None
@@ -2398,7 +2404,7 @@ def expand_cd(tokens):
             pending_script = True
         out.append(token)
         index += 1
-    return out, changed
+    return cwd if stop is not None else (out, changed)
 
 
 def expand(tokens):
