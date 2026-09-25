@@ -1531,7 +1531,7 @@ WHY_PROMPT_CASES = [
 ]
 
 
-# why-prompt.py's spelling hints: (label, command word, expected hint kind).
+# why-prompt.py's spelling hints: (label, command word, rules, expected kind).
 # "NO RULE MATCHES" reads the same whether nothing could ever match or the
 # same file is allowlisted under another spelling, and those want opposite
 # fixes. The kinds are "relative", "alias" and None -- content is not pinned,
@@ -1539,15 +1539,28 @@ WHY_PROMPT_CASES = [
 #
 # A rule is text and a grant is a realpath, which is why the cwd matters: the
 # same script clears written one way and prompts written another.
+#
+# `rules` is a fixture, as TEST_RULES is, so the alias case does not depend on
+# what this machine happens to allow. The alias check resolves both sides, so
+# it needs a rule naming a file that really exists -- this file's own
+# directory is the one path a case can assume.
+_CASES_DIR = os.path.dirname(os.path.abspath(__file__))
+_THIS = os.path.join(_CASES_DIR, "bash-write-guard-cases.py")
+
 SPELLING_HINT_CASES = [
-    ("bare name is resolved on PATH, not by cwd", "ruff", None),
-    ("flag is not a path", "--check", None),
-    ("relative with a slash is cwd-dependent", "claude/sync.py", "relative"),
-    ("explicitly relative too", "./sync.py", "relative"),
-    ("absolute with no rule at all", "/elsewhere/tool.py", None),
-    # The tilde form is the published spelling; the same file spelled from its
-    # real mount point matches no rule, and the reader cannot see why.
-    ("absolute twin of a tilde rule", "~/.claude/tools/why-prompt.py", None),
+    ("bare name is resolved on PATH, not by cwd", "ruff", [], None),
+    ("flag is not a path", "--check", [], None),
+    ("relative with a slash is cwd-dependent",
+     "claude/sync.py", [], "relative"),
+    ("explicitly relative too", "./sync.py", [], "relative"),
+    ("absolute with no rule at all", "/elsewhere/tool.py", [], None),
+    # A rule for the same file under another spelling is invisible in the
+    # table, and it is the difference between "add a rule" and "retype it".
+    ("absolute twin of a rule for the same file",
+     os.path.realpath(_THIS), [(_THIS, "user")], "alias"),
+    # A rule for a DIFFERENT file must not be offered as the twin.
+    ("unrelated rule is not a twin",
+     os.path.join(_CASES_DIR, "no-such-file.py"), [(_THIS, "user")], None),
 ]
 
 

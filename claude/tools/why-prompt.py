@@ -214,7 +214,15 @@ def selftest():
             failed += 1
             print(f"FAIL  {label}\n      segment  {segment}\n"
                   f"      expected {expected}\n      got      {got}")
-    print(f"{len(cases.WHY_PROMPT_CASES)} cases, {failed} failed")
+    for label, word, rules, expected in cases.SPELLING_HINT_CASES:
+        kind, _text = spelling_hint(word, os.getcwd(), rules)
+        if kind != expected:
+            failed += 1
+            print(f"FAIL  {label}\n      word     {word!r}\n"
+                  f"      expected {expected}\n      got      {kind}")
+
+    total = len(cases.WHY_PROMPT_CASES) + len(cases.SPELLING_HINT_CASES)
+    print(f"{total} cases, {failed} failed")
     return failed
 
 
@@ -282,32 +290,37 @@ def match(text, rules):
 
 
 def spelling_hint(word, cwd, prefix):
-    """Why a command word missed, when the FILE it names would not have.
+    """(kind, text) for why a command word missed, or (None, None).
 
     Both gates compare text, not inodes, while a local grant compares a
     realpath. So the same program clears or prompts depending on how it is
     written, and "NO RULE MATCHES" reads identically in every case. These are
     the two spellings measured to cost a prompt on a command that was already
     permitted under another name.
+
+    `kind` is what the selftest pins -- "relative" or "alias" -- so the wording
+    stays free to improve without rewriting cases.
     """
     if word.startswith("-") or "/" not in word:
-        return None            # a bare name is resolved on PATH, not by cwd
+        return None, None      # a bare name is resolved on PATH, not by cwd
     resolved = os.path.realpath(os.path.expanduser(word))
     if not word.startswith("/") and not word.startswith("~"):
-        return (f"relative to the CURRENT directory -- here that is "
-                f"{resolved}.\n     Which directory that is depends on the cwd "
-                f"and on any earlier `cd`,\n     so a grant matching on a real "
-                f"path cannot prove what it names.\n     Spell it absolutely, "
-                f"or with ~, and this becomes decidable.")
+        return "relative", (
+            f"relative to the CURRENT directory -- here that is {resolved}.\n"
+            f"     Which directory that is depends on the cwd and on any "
+            f"earlier `cd`,\n     so a grant matching on a real path cannot "
+            f"prove what it names.\n     Spell it absolutely, or with ~, and "
+            f"this becomes decidable.")
     # Absolute and still unmatched: a rule for the same file under a different
     # spelling is the common cause, and only the tilde form is published.
     for pattern, source in prefix:
         if (pattern.startswith("~") or pattern.startswith("/")) and \
                 os.path.realpath(os.path.expanduser(pattern)) == resolved:
-            return (f"the SAME file has a rule, spelled Bash({pattern}:*) "
-                    f"[{source}].\n     Prefix rules match text, not inodes. "
-                    f"Write it as {pattern}.")
-    return None
+            return "alias", (
+                f"the SAME file has a rule, spelled Bash({pattern}:*) "
+                f"[{source}].\n     Prefix rules match text, not inodes. "
+                f"Write it as {pattern}.")
+    return None, None
 
 
 def main():
@@ -393,7 +406,7 @@ def main():
                           f"     Invoke the script directly if it is "
                           f"executable.")
                     word = script
-            hint = spelling_hint(word, cwd, prefix)
+            _, hint = spelling_hint(word, cwd, prefix)
             if hint:
                 print(f"{'':<{width}}  ^ {hint}")
 
