@@ -5,10 +5,17 @@ someone to read -- so the list of commands that count lives here rather than
 being copied into each. `git commit` is universal and built in; anything else
 names a particular employer's review tooling and belongs in the sibling
 `comment-ratio-triggers`, which is not published.
+
+Reading the git state the command will act on lives here for the same reason.
+Both gates have to answer "what does this commit actually contain", and both
+get it wrong in the same way if they only look at the index: `-a` stages at
+commit time, so nothing is staged while the hook runs. One implementation,
+tested once.
 """
 
 import os
 import re
+import shlex
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 TRIGGER_FILE = os.path.join(_HERE, "comment-ratio-triggers")
@@ -64,3 +71,44 @@ def triggered(command):
 
 def acknowledged(command):
     return MARKER in command
+
+
+def commit_scope(command, match=None):
+    """The argument text belonging to one command, not the whole line.
+
+    A compound puts unrelated flags on the same line -- `git add -A && git
+    commit` has an -A that is the add's, not the commit's -- so everything here
+    reads only from the trigger to the next separator.
+    """
+    m = match or re.search(GIT_COMMIT, command)
+    if not m:
+        return ""
+    return command[m.end():].split(";")[0].split("|")[0].split("&")[0]
+
+
+def split_tokens(text):
+    """shlex if it can, whitespace if it cannot.
+
+    A heredoc message holding an apostrophe makes shlex raise, and a gate that
+    refused to parse would be a gate that refused the commit.
+    """
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
+
+
+def commits_all(command):
+    """Does this `git commit` stage tracked files itself, via -a/--all?
+
+    Short flags bundle, so -am is -a. `-A` belongs to an add, never to the
+    commit, and --amend is not --all -- both are why this reads real tokens
+    rather than searching the line for a letter.
+    """
+    tokens = split_tokens(commit_scope(command))
+    for tok in tokens:
+        if tok == "--all":
+            return True
+        if tok.startswith("-") and not tok.startswith("--") and "a" in tok[1:]:
+            return True
+    return False

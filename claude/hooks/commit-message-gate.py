@@ -30,7 +30,7 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from hook_triggers import acknowledged, triggered  # noqa: E402
+from hook_triggers import acknowledged, commits_all, triggered  # noqa: E402
 
 # (max lines changed, max body lines). Read as: up to this size, that many.
 LIMITS = [(20, 3), (100, 4), (500, 6), (10 ** 9, 7)]
@@ -139,6 +139,14 @@ def gather(command, cwd):
         if message is None:
             return None
         changed = numstat_total(["--cached"], cwd)
+        # `-a` stages every tracked change on the way past, so the index alone
+        # is not what gets committed. Counting only `--cached` judged a 35-line
+        # commit by its 5 staged lines -- always understating, so the budget
+        # came out too tight rather than too loose.
+        if commits_all(command):
+            unstaged = numstat_total([], cwd)
+            if unstaged is not None and changed is not None:
+                changed += unstaged
         # An amend replaces HEAD, so the resulting commit carries HEAD's diff as
         # well as whatever is staged on top of it.
         if "--amend" in command:
@@ -249,6 +257,38 @@ def _selftest():
         for form in ("-F m.txt", "--file m.txt", "--file=m.txt", "-Fm.txt"):
             check(f"{form} read", message_from_command(f"git commit {form}", tmp),
                   "S\n\nbody\n")
+
+    # `-a` commits tracked files that were never staged, so counting only the
+    # index understates the change -- and the budget with it. A big unstaged
+    # edit beside a small staged one judged a 35-line commit at the 5-line
+    # budget. Fixture: 5 staged lines, 30 unstaged tracked lines.
+    with tempfile.TemporaryDirectory() as tmp:
+        def git(*args):
+            subprocess.run(["git"] + list(args), cwd=tmp, capture_output=True)
+        git("init", "-q", ".")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "T")
+        for name in ("staged.txt", "unstaged.txt"):
+            with open(os.path.join(tmp, name), "w") as fh:
+                fh.write("\n".join(str(n) for n in range(1, 11)) + "\n")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        with open(os.path.join(tmp, "staged.txt"), "a") as fh:
+            fh.write("\n".join(str(n) for n in range(11, 16)) + "\n")
+        git("add", "staged.txt")
+        with open(os.path.join(tmp, "unstaged.txt"), "a") as fh:
+            fh.write("\n".join(str(n) for n in range(11, 41)) + "\n")
+
+        def size(command):
+            got = gather(command + ' -m "S\n\nbody"', tmp)
+            return got[1] if got else None
+
+        check("plain commit counts index", size("git commit"), 5)
+        check("-a adds unstaged", size("git commit -a"), 35)
+        check("-am adds unstaged", size("git commit -am"), 35)
+        check("--all adds unstaged", size("git commit --all"), 35)
+        # A bare `-m` is not `-a`: the letter has to be a real short flag.
+        check("-m alone is not -a", size("git commit"), 5)
 
     check("rev found", revision_in("post-review c7ad8c929c2a"), "c7ad8c929c2a")
     check("HEAD found", revision_in("post-review HEAD"), "HEAD")

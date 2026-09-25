@@ -28,13 +28,13 @@ Self-test:  ./comment-ratio-gate.py --test
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from hook_triggers import MARKER, acknowledged, trigger_match, triggered  # noqa: E402
+from hook_triggers import (MARKER, acknowledged, commit_scope,  # noqa: E402
+                           commits_all, split_tokens, trigger_match, triggered)
 
 TOOL = os.path.expanduser("~/.claude/tools/comment-ratio.py")
 
@@ -107,29 +107,6 @@ def explain(report):
             "re-indented into a new scope, which no rewording fixes.")
 
 
-def commits_all(command):
-    """Does this `git commit` stage tracked files itself, via -a/--all?
-
-    Only the segment after `git commit` counts: `git add -A && git commit` puts
-    an unrelated -A earlier in the same line. Short flags bundle, so -am is -a.
-    A heredoc message holding an apostrophe makes shlex raise, same as below.
-    """
-    m = re.search(r"\bgit\s+commit(?![\w-])", command)
-    if not m:
-        return False
-    scope = command[m.end():].split(";")[0].split("|")[0].split("&")[0]
-    try:
-        tokens = shlex.split(scope)
-    except ValueError:
-        tokens = scope.split()
-    for tok in tokens:
-        if tok == "--all":
-            return True
-        if tok.startswith("-") and not tok.startswith("--") and "a" in tok[1:]:
-            return True
-    return False
-
-
 def target_for(command):
     """What to measure: an explicit revision if the command names one, else staged.
 
@@ -150,15 +127,11 @@ def target_for(command):
     # say -- otherwise measures whatever it mentioned rather than the commit
     # actually being sent, and blocks on the wrong change.
     m = trigger_match(command)
-    scope = command[m.end():].split(";")[0].split("|")[0].split("&")[0] if m else command
+    scope = commit_scope(command, m) if m else command
 
     # A 7+ hex word is a revision; anything shorter collides with ordinary words
     # ("deadbeef" is fine, "add" is not). HEAD is spelled out separately.
-    try:
-        tokens = shlex.split(scope)
-    except ValueError:
-        tokens = scope.split()
-    for tok in tokens:
+    for tok in split_tokens(scope):
         if tok.startswith("-"):
             continue
         if re.fullmatch(r"HEAD|[0-9a-f]{7,40}", tok):
