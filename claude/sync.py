@@ -59,6 +59,7 @@ FILES = [
     "skills/write-guard/SKILL.md",
     "skills/code-review-practice/SKILL.md",
     "skills/commit-messages/SKILL.md",
+    "skills/cpp-binary-size/SKILL.md",
 ]
 
 # Named so the omission is a decision on the record, not an oversight.
