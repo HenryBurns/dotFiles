@@ -557,6 +557,31 @@ CASES = [
     ("ask",    "docker top c -eo pid"),
     # An argument the guard cannot read could BE one of the unvetted flags.
     ("ask",    "docker logs --tail $N c"),
+    # `volume` is a subcommand GROUP, so the verb after it decides: `ls` lists,
+    # and `rm`/`prune` next to it delete data no container can recreate. Only
+    # the listing verb is vouched, which is why this is keyed on the pair.
+    ("silent", "docker volume ls"),
+    ("silent", "docker volume ls -q"),
+    ("silent", "docker volume ls --filter dangling=true"),
+    ("ask",    "docker volume rm v"),
+    ("ask",    "docker volume prune -f"),
+    ("ask",    "docker volume create v"),
+    ("ask",    "docker volume inspect v"),    # not vetted, so not vouched
+    ("ask",    "docker volume ls --frobnicate"),
+    ("ask",    "docker volume ls --filter $F"),
+    ("ask",    "docker volume"),              # no verb at all
+    ("ask",    "docker -H tcp://evil:2375 volume ls"),
+    # `system df` reports disk usage, but `system prune` beside it is the most
+    # destructive verb docker has -- containers, networks, images and, with
+    # --volumes, data. The pair is why only the reporting verb is vouched.
+    ("silent", "docker system df"),
+    ("silent", "docker system df -v"),
+    ("silent", "docker system df --format json"),
+    ("ask",    "docker system prune -af"),
+    ("ask",    "docker system prune --volumes"),
+    ("ask",    "docker system events"),       # streams, not vetted
+    ("ask",    "docker system"),              # no verb at all
+    ("ask",    "docker system df --format $F"),
 
     # mount's own usage line spells the read: `mount [-lhV]`. A source or a
     # target operand means it is mounting, so ANY positional refuses. Vouched

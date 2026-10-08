@@ -378,6 +378,19 @@ DOCKER_READ_FLAGS = {
     "top": (set(), set()),
 }
 
+# Subcommand GROUPS, where the verb after the group decides. Keyed on the pair
+# because the group name alone vouches for nothing: `volume rm` and
+# `volume prune` sit beside `ls` and delete data no container can recreate.
+# Only listing verbs belong here -- `inspect` is read-only too, but its
+# --format is a Go template, which is a different thing to vet.
+# `system prune` is the most destructive verb docker has -- it removes
+# containers, networks and images at once, and with --volumes the data too --
+# so the group is keyed verb-by-verb here exactly as `volume` is.
+DOCKER_READ_SUBGROUPS = {
+    ("volume", "ls"): ({"-q", "--quiet"}, {"-f", "--filter", "--format"}),
+    ("system", "df"): ({"-v", "--verbose"}, {"--format"}),
+}
+
 # mount's usage line separates its two jobs itself: `mount [-lhV]` lists what
 # is already mounted, and every other form takes a source or a target and
 # changes the filesystem. So only the listing flags are here, and the

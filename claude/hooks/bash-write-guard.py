@@ -627,13 +627,21 @@ def docker_reads(args):
     A GLOBAL option refuses before the subcommand is even read: -H and
     -c/--context pick a different daemon, so the subcommand that follows says
     nothing about what is being talked to.
+
+    A subcommand GROUP needs its verb too: `volume ls` lists, while `volume rm`
+    beside it deletes. Those are keyed on the pair, so the group name on its
+    own -- or with any other verb -- falls through to the refusal below.
     """
     if not args:
         return False
     flags = T.DOCKER_READ_FLAGS.get(args[0])
-    if flags is None:
-        return False
-    return vetted_flag_walk(args[1:], *flags) is not None
+    if flags is not None:
+        return vetted_flag_walk(args[1:], *flags) is not None
+    if len(args) >= 2:
+        flags = T.DOCKER_READ_SUBGROUPS.get((args[0], args[1]))
+        if flags is not None:
+            return vetted_flag_walk(args[2:], *flags) is not None
+    return False
 
 
 def command_is_lookup(args):
