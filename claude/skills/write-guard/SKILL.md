@@ -15,6 +15,7 @@ guard checks — that lives in the code, where it cannot drift:
 | What is it pinned against? | `~/.claude/hooks/bash-write-guard-cases.py` — `TEST_RULES`, `CASES`, `GAPS`, `WHY_PROMPT_CASES`; data only, for both tools |
 | What are the two jobs? | its module docstring |
 | Why did *this* command prompt? | `~/.claude/tools/why-prompt.py '<the exact command>'`, pinned by `--test` |
+| What would the guard decide for these commands? | `~/.claude/tools/guard-verdict.py 'cmd' 'cmd'`, or `- < cases.txt` for a batch; `--expect ask` gates |
 | How does a prompt get decided at all? | `claude/README.md` in the dotfiles repo (not installed into `~/.claude`) |
 | Site-specific grants | `~/.claude/hooks/local_grants.py`, untracked — never put a local path or an internal name in the guard itself |
 | What pins the local grants? | `~/.claude/hooks/local-grants-cases.py`, also untracked; `local_grants.py --test` runs it, and so does the guard's `--test` |
@@ -173,7 +174,9 @@ Before granting one:
    later fails the suite as a reminder. Never leave a known hole undocumented.
 4. Verify through the real interface, not just the unit under test: feed the hook a JSON
    `tool_input` on stdin and read the verdict. Several fixes looked right in isolation and did
-   nothing end to end.
+   nothing end to end. **`guard-verdict.py` is how you do that** — one subprocess per command,
+   the real JSON payload, and it is allowlisted. Hand-rolling the same thing with `python3 -c`
+   makes the harness itself prompt; see the trap below.
 5. Publishing: `python3 claude/sync.py --check`, then `sync.py`. Its keyword scan **aborts** on
    workplace-specific content — including in test cases, which is how a real path once got
    caught on its way out. Use a neutral placeholder path in cases. `sync.py`'s `FILES` list is
@@ -199,6 +202,12 @@ A module-scope `T.SOMETHING` dereferences the tables *during import*, before `_d
 run — the process then dies with a traceback, exit non-zero and no stdout, which `PreToolUse`
 treats as non-blocking. That is fail-**open**. A derived table belongs beside what it derives
 from, in the tables file. `_missing_tables_ok()` is the only thing that catches this.
+
+**The harness is not the work.** A `python3 -c` wrapper, a `for` loop over command strings, or
+JSON assembled through shell quoting each prompts on its own account — `python3` is in
+`ALWAYS_ASK`, and a `-c` body can never be granted because it is code rather than a path. You
+then spend the next question diagnosing your own scaffolding. Use `guard-verdict.py`; the fuller
+list of shapes that prompt for themselves is in the verification-harness note in memory.
 
 **The test fixture is not the real rule set.** `TEST_RULES` is a small stand-in. A case
 prompting there may only mean the fixture lacks the rule — this produced three wrong diagnoses
