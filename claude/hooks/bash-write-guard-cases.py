@@ -403,6 +403,23 @@ CASES = [
     ("ask",    "ssh -L 8080:localhost:80 host ls"),           # tunnel
     ("ask",    "ssh -M -S /tmp/ctl host ls"),                 # control socket
     ("ask",    "ssh host"),                                   # interactive login
+    # The git forges answer a no-operand ssh with a forced command that prints
+    # who you are and exits: there is no shell to get, so the form that would
+    # be an interactive login anywhere else is a connectivity check here. Only
+    # these hosts, and only with NO operand -- `git-receive-pack` after one is
+    # a push, and it keeps asking because any operand is judged as a command.
+    ("allow",  "ssh -T git@github.com"),
+    ("allow",  "ssh git@github.com"),
+    ("allow",  "ssh -T git@gitlab.com"),
+    ("allow",  "ssh -T git@bitbucket.org"),
+    ("ask",    "ssh -T git@github.com git-receive-pack r.git"),
+    # An operand is judged as a remote command, exactly as for any other host:
+    # `ls` was already vouched by the ordinary exemption, a push is not.
+    ("ask",    "ssh -T someone@github.com"),     # only the git@ account
+    ("ask",    "ssh -T git@github.com.evil.net"), # suffix, not the host
+    ("ask",    "ssh -T git@notgithub.com"),
+    ("ask",    "ssh -A -T git@github.com"),      # forwards the agent
+    ("ask",    "ssh -o ProxyCommand=nc -T git@github.com"),
     # A scratchpad path names another machine's filesystem over there, so the
     # exemption that makes a local scratchpad write silent must not follow.
     ("ask",    f"ssh host 'sort -o {SANDBOX}/f data'"),

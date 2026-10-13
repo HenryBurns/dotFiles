@@ -333,6 +333,48 @@ def ssh_remote_command(args):
     return text
 
 
+def ssh_forced_command_host(args):
+    """True for `ssh <vetted flags> <forced-command host>` with NO operand.
+
+    The flag walk is ssh_remote_command's, re-run here, so a flag that acts
+    locally -- -A, -E, -o ProxyCommand -- refuses exactly as it does there.
+    Only the tail differs: that function wants a command after the
+    destination and refuses without one, while this form IS the absence.
+    """
+    index, total = 0, len(args)
+    while index < total:
+        token = args[index]
+        if token == "--":
+            index += 1
+            break
+        if not token.startswith("-") or token == "-":
+            break                       # the destination
+        if token.startswith("-o"):
+            attached = token[2:]
+            if not attached:
+                index += 1
+                if index >= total:
+                    return False
+                attached = args[index]
+            key = attached.partition("=")[0].strip().lower()
+            if key not in T.SSH_SAFE_OPTIONS:
+                return False
+            index += 1
+            continue
+        if token in T.SSH_VALUE_FLAGS:
+            index += 2
+            continue
+        letters = token[1:]
+        if not letters or not all(c in T.SSH_BOOL_LETTERS for c in letters):
+            return False
+        index += 1
+    if index >= total:
+        return False                    # no destination
+    if args[index] not in T.SSH_FORCED_COMMAND_HOSTS:
+        return False
+    return index + 1 == total           # an operand would be a real command
+
+
 def ssh_vouched(args, depth, rules):
     """True if `ssh <args>` carries a command this guard can stand behind.
 
@@ -352,12 +394,21 @@ def ssh_vouched(args, depth, rules):
     the very thing listing ssh in ALWAYS_ASK is supposed to prevent.
 
     No rules available means no vouching. That is the fail-safe direction.
+
+    One destination-keyed exception: the git forges answer a no-operand ssh
+    with a forced command that prints the authenticated account and exits, so
+    there is no shell to be had and no command to judge. It is vouched here
+    rather than in ssh_remote_command because that function's contract is to
+    EXTRACT a command, and there is none -- returning an empty list would read
+    as "nothing to check" at every other call site this ever gains.
     """
     if rules is None or depth > MAX_SUBST_DEPTH:
         return False
     remote = ssh_remote_command(args)
     if remote is None:
-        return False
+        # ssh's own flags still have to be vetted, so this reuses the walk
+        # above by asking it for the destination of an operand-free command.
+        return ssh_forced_command_host(args)
     if find_reasons(remote, depth + 1, rules):
         return False
     prefix, deny = rules

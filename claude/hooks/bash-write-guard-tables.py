@@ -314,6 +314,23 @@ SSH_SAFE_OPTIONS = {
     "passwordauthentication", "pubkeyauthentication", "preferredauthentications",
 }
 
+# Destinations that answer a no-operand ssh with a FORCED command -- they print
+# which account authenticated and exit, and never hand out a shell. That makes
+# `ssh -T git@github.com` the standard way to test a key, while the identical
+# shape against any other host is an interactive login, which is why this is a
+# list of exact destinations rather than a flag or a pattern.
+#
+# Exact match on the whole destination: a substring test would accept
+# `git@github.com.evil.net`, and the `git@` is part of it because only that
+# account is forced. An operand after the destination is still judged as a
+# remote command -- `git-receive-pack` is a push -- so this covers the bare
+# form alone. ssh's own flags are vetted first, unchanged, so -A and
+# -o ProxyCommand still refuse.
+SSH_FORCED_COMMAND_HOSTS = frozenset({
+    "git@github.com", "git@gitlab.com", "git@bitbucket.org",
+    "git@ssh.github.com",          # the port-443 endpoint, same forced command
+})
+
 # tmux is the same problem as ssh in a different costume: `new-session`,
 # `run-shell`, `send-keys`, `if-shell` and `split-window` all execute a shell
 # command, and `kill-server` throws away running work. So tmux is in ALWAYS_ASK
