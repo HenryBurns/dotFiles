@@ -30,6 +30,7 @@ TEST_RULES = [(pattern, "test") for pattern in (
     # openssl is in ALWAYS_ASK, so a rule here only proves the exemption is
     # what clears the read subcommands rather than a missing rule hiding them.
     "openssl",
+    "sha256sum",
     # Stands in for an allowlisted script, so the python3 cases can test the
     # unwrapping without depending on a local grant (grants are off in --test).
     "/workspace/tool.py",
@@ -459,6 +460,16 @@ CASES = [
     # An argument the guard cannot read could BE one of the absent flags.
     ("ask",    "openssl s_client -connect $TARGET"),
     ("ask",    "openssl x509 -in $F -noout -text"),
+    # The checksum tools have no output flag at all -- -c/--check READS a
+    # digest list and only sets an exit status -- so a prefix rule is enough
+    # and they need no table. Pinned here because the ssh exemption needs
+    # them allowlisted, which is the half a local `silent` does not show.
+    ("allow",  "ssh host 'sha256sum /opt/x/bin/prog | cut -c1-16'"),
+    ("allow",  "ssh host 'sha256sum -c sums.txt'"),
+    # A copy onto a live host is a write, and stays one however read-only the
+    # commands beside it are. This is the shape that must NOT become silent.
+    ("ask",    "ssh host 'cp -p /opt/x/bin/prog /var/tmp/prog.orig'"),
+    ("ask",    "cp -p /opt/x/bin/prog /var/tmp/prog.orig"),
     # The real shape this came from: a remote cert inspection over ssh.
     ("allow",  "ssh host 'echo | openssl s_client -connect 1.2.3.4:443 -tls1_2"
                " | openssl x509 -noout -text | grep -E PAT | sort -u'"),
