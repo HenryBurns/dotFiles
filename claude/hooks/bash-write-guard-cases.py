@@ -27,6 +27,9 @@ TEST_RULES = [(pattern, "test") for pattern in (
     "git shortlog", "git archive", "git bundle", "git format-patch",
     "ruff", "realpath", "basename", "dirname", "file", "readlink",
     "command -v", "command -V", "ps",
+    # openssl is in ALWAYS_ASK, so a rule here only proves the exemption is
+    # what clears the read subcommands rather than a missing rule hiding them.
+    "openssl",
     # Stands in for an allowlisted script, so the python3 cases can test the
     # unwrapping without depending on a local grant (grants are off in --test).
     "/workspace/tool.py",
@@ -420,6 +423,45 @@ CASES = [
     ("ask",    "ssh -T git@notgithub.com"),
     ("ask",    "ssh -A -T git@github.com"),      # forwards the agent
     ("ask",    "ssh -o ProxyCommand=nc -T git@github.com"),
+    # openssl is ~50 subcommands in one binary, so it is keyed per subcommand
+    # and per flag. The read ones are enumerated; everything else asks.
+    ("silent", "openssl x509 -noout -text"),
+    ("silent", "openssl x509 -noout -subject -issuer -dates"),
+    ("silent", "openssl s_client -connect 1.2.3.4:443 -tls1_2"),
+    ("silent", "openssl s_client -connect h:443 -servername h -showcerts"),
+    ("silent", "openssl version -a"),
+    ("silent", "openssl ciphers -v"),
+    ("silent", "openssl errstr 0A000126"),
+    ("silent", "openssl verify -CAfile ca.pem cert.pem"),
+    ("silent", "openssl asn1parse -in c.der -inform DER -noout"),
+    ("silent", "openssl s_time -connect h:443 -new"),
+    ("silent", "openssl speed -evp aes-128-cbc"),
+    # The write flags, each of which is the reason its subcommand is vetted
+    # per flag rather than vouched whole.
+    ("ask",    "openssl x509 -in c.pem -out c.der -outform DER"),
+    ("ask",    "openssl x509 -req -signkey k.pem -in r.csr"),
+    ("ask",    "openssl s_client -connect h:443 -keylogfile /tmp/secrets"),
+    ("ask",    "openssl s_client -connect h:443 -sess_out /tmp/sess"),
+    ("ask",    "openssl asn1parse -in c.der -out parsed.bin"),
+    # Subcommands that will never be in the table: they mint keys, write
+    # certs, encrypt to a file, rewrite a directory, or listen.
+    ("ask",    "openssl genrsa -out key.pem 4096"),
+    ("ask",    "openssl req -new -x509 -keyout k.pem -out c.pem"),
+    ("ask",    "openssl enc -aes-256-cbc -in f -out f.enc"),
+    ("ask",    "openssl rehash /etc/ssl/certs"),
+    ("ask",    "openssl s_server -accept 4433 -cert c.pem"),
+    ("ask",    "openssl ca -in r.csr -out c.pem"),
+    # An unlisted flag refuses, so a subcommand that gains an output option
+    # keeps asking until someone reads its help.
+    ("ask",    "openssl x509 -noout -frobnicate"),
+    ("ask",    "openssl version --frobnicate"),
+    ("ask",    "openssl"),                        # no subcommand at all
+    # An argument the guard cannot read could BE one of the absent flags.
+    ("ask",    "openssl s_client -connect $TARGET"),
+    ("ask",    "openssl x509 -in $F -noout -text"),
+    # The real shape this came from: a remote cert inspection over ssh.
+    ("allow",  "ssh host 'echo | openssl s_client -connect 1.2.3.4:443 -tls1_2"
+               " | openssl x509 -noout -text | grep -E PAT | sort -u'"),
     # A scratchpad path names another machine's filesystem over there, so the
     # exemption that makes a local scratchpad write silent must not follow.
     ("ask",    f"ssh host 'sort -o {SANDBOX}/f data'"),

@@ -59,15 +59,29 @@ DEV_SINKS = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd"}
 _TABLES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "bash-write-guard-tables.py")
 
-try:
-    import importlib.util as _importlib_util
-    _spec = _importlib_util.spec_from_file_location(
-        "bash_write_guard_tables", _TABLES_FILE)
-    T = _importlib_util.module_from_spec(_spec)
-    _spec.loader.exec_module(T)
-    TABLES_ERROR = None
-except Exception as _exc:            # any failure at all: recorded, not raised
-    T, TABLES_ERROR = None, _exc
+
+def _load_tables(path, name):
+    """A sibling table module, or None with the exception, never a raise."""
+    try:
+        import importlib.util as importlib_util
+        spec = importlib_util.spec_from_file_location(name, path)
+        module = importlib_util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module, None
+    except Exception as exc:         # any failure at all: recorded, not raised
+        return None, exc
+
+
+T, TABLES_ERROR = _load_tables(_TABLES_FILE, "bash_write_guard_tables")
+
+# openssl's table is a file of its own: ~50 subcommands, each needing its own
+# flag list, would crowd out every other tool in the shared module. A failure
+# to load it is NOT fatal the way TABLES_ERROR is -- openssl is in ALWAYS_ASK,
+# so an empty table simply means every openssl command keeps asking, which is
+# the safe direction. _missing_openssl_ok() pins that.
+OPENSSL_TABLES, OPENSSL_ERROR = _load_tables(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "bash-write-guard-openssl.py"), "bash_write_guard_openssl")
 
 # Commands that write, delete, or change metadata whatever flags they are given.
 # None of these are allowlisted, so they already prompt; naming them here is
@@ -170,6 +184,10 @@ ALWAYS_ASK = {
     "perf": "records profiles to a file",
     "claude": "runs an agent with its own permissions, or rewrites config",
     "docker": "runs a container with host access, or execs into a running one",
+    # ~50 subcommands in one binary: genrsa and req MINT keys and certs, enc
+    # encrypts to a file, rehash rewrites a directory, s_server listens. The
+    # read ones are vetted per subcommand in bash-write-guard-openssl.py.
+    "openssl": "generates keys, writes certificates, or opens a socket",
     "mount": "attaches or moves a filesystem, or remounts one writable",
     "man": "can hand the page to a pager, browser or formatter of your choosing",
     "dmesg": "clears the kernel ring buffer or changes console logging",
@@ -331,6 +349,26 @@ def ssh_remote_command(args):
     if SANDBOX_ANYWHERE.search(text):
         return None
     return text
+
+
+def openssl_reads(args):
+    """True if `openssl <args>` is a vetted read-only subcommand.
+
+    False whenever the table did not load, which leaves openssl asking: the
+    subcommands absent from it generate keys, write certificates, re-hash a
+    directory or listen on a socket, so an empty table must not read as
+    "nothing known against it".
+
+    A positional is fine -- `errstr <code>`, `verify <cert>`, `speed <algo>`
+    all take one -- because the flags are what decide here, and an unreadable
+    one is refused inside the walk.
+    """
+    if OPENSSL_TABLES is None or not args:
+        return False
+    flags = OPENSSL_TABLES.OPENSSL_READ_FLAGS.get(args[0])
+    if flags is None:
+        return False
+    return vetted_flag_walk(args[1:], *flags) is not None
 
 
 def ssh_forced_command_host(args):
@@ -1841,6 +1879,7 @@ ASK_EXEMPTIONS = {
     # such bet.
     "claude": lambda rest, depth, rules: rest == ["mcp", "list"],
     "docker": lambda rest, depth, rules: docker_reads(rest),
+    "openssl": lambda rest, depth, rules: openssl_reads(rest),
     "mount": lambda rest, depth, rules: mount_reads(rest),
     "man": lambda rest, depth, rules: man_reads(rest),
     "dmesg": lambda rest, depth, rules: dmesg_reads(rest),
@@ -3396,6 +3435,26 @@ def _missing_tables_ok():
         sys.argv = saved_argv
 
 
+def _missing_openssl_ok():
+    """Does an unloadable openssl table leave openssl ASKING?
+
+    The opposite property to _missing_tables_ok: that one proves a crash still
+    asks, this proves an ABSENCE does. openssl's table is the exemption to an
+    ALWAYS_ASK entry, so a table that fails to load must withdraw the
+    exemption -- if openssl_reads ever answered True on a missing table, every
+    key-generating subcommand would be vouched by a file that is not there.
+    """
+    saved = OPENSSL_TABLES
+    try:
+        globals()["OPENSSL_TABLES"] = None
+        vouched = openssl_reads(["x509", "-noout", "-text"])
+        return vouched is False, f"vouched={vouched}"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        globals()["OPENSSL_TABLES"] = saved
+
+
 def _selftest():
     if T is None:
         print(f"cannot load {_TABLES_FILE}: {TABLES_ERROR}")
@@ -3467,6 +3526,7 @@ def _selftest():
 
     fail_closed, fail_closed_got = _fail_closed_ok()
     tables_closed, tables_got = _missing_tables_ok()
+    openssl_closed, openssl_got = _missing_openssl_ok()
 
     failed = []
     for group, cases in (("case", fixtures.CASES), ("gap", fixtures.GAPS),
@@ -3500,6 +3560,10 @@ def _selftest():
         print(f"FAIL-OPEN  an unloadable tables file emitted {tables_got!r}, "
               f"not 'ask'. Something reads T at module scope, so the import "
               f"dies before _decide() can turn it into a prompt.")
+    if not openssl_closed:
+        print(f"FAIL-OPEN  a missing openssl table still vouched for a "
+              f"subcommand ({openssl_got}). The exemption must withdraw with "
+              f"the file, or genrsa is vouched by something that is not there.")
 
     # A machine's own grants may carry their own cases; run those too, since a
     # grant that stopped matching looks exactly like one that was never added.
@@ -3515,7 +3579,7 @@ def _selftest():
             print("local_grants.py cases: ", end="", flush=True)
             local_failed = selftest() != 0
     return 1 if failed or local_error or local_failed or wrapper_errors \
-        or not fail_closed or not tables_closed else 0
+        or not fail_closed or not tables_closed or not openssl_closed else 0
 
 
 def emit(decision, reason):

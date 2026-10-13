@@ -111,6 +111,8 @@
       "Bash(docker top:*)",
       "Bash(docker volume ls:*)",
       "Bash(docker system df:*)",
+      "Bash(openssl:*)",
+      "Bash(timeout:*)",
       "Bash(namei:*)",
       "Bash(realpath:*)",
       "Bash(basename:*)",

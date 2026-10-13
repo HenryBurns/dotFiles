@@ -38,6 +38,7 @@ FILES = [
     "hooks/bash-write-guard.py",
     "hooks/bash-write-guard-cases.py",
     "hooks/bash-write-guard-tables.py",
+    "hooks/bash-write-guard-openssl.py",
     "hooks/unguarded-worktrees",
     "hooks/comment-ratio-gate.py",
     "hooks/commit-message-gate.py",
