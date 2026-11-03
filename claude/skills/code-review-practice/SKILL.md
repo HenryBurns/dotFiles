@@ -100,6 +100,14 @@ before drafting, or the reviewer gets the same answer twice.
 Survey the **whole stack**, not just the reviews you expect feedback on. A new review can arrive on
 any of them.
 
+### Human comments first, bot comments after
+
+**Address every human reviewer's comment before any automated reviewer's.** A human's fix often
+reshapes the code a bot comment was about, so the bot's ask is already done, no longer applies, or
+now needs a different fix. Settle the human threads, then re-read each bot comment against the
+changed code before acting on it. A bot comment is still answered, even if the answer is only that
+an earlier change made it moot.
+
 ### Make the change first, then reply
 
 **Do the work before writing the reply — always, unless explicitly told otherwise.** Not "here is

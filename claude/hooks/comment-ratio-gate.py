@@ -119,9 +119,16 @@ def target_for(command):
     `git commit -a` is the exception, and it silently defeated this gate: -a
     stages at commit time, so nothing is staged while the hook runs and the
     staged diff is empty. Measure the working tree, which is what -a commits.
+
+    `--amend` moves the base to HEAD^. Against HEAD it measured only the edit
+    being folded in, so a comment-only fixup scored 100% on a commit that was
+    half the local density as a whole.
     """
     if re.search(r"\bgit\s+commit(?![\w-])", command):
-        return ["--worktree"] if commits_all(command) else ["--staged"]
+        target = ["--worktree"] if commits_all(command) else ["--staged"]
+        if "--amend" in split_tokens(commit_scope(command)):
+            target.append("--amend")
+        return target
 
     # Read the revision out of the post itself, not the whole command line. A
     # compound that merely mentions a revision earlier -- an `echo` naming HEAD,
@@ -240,15 +247,20 @@ def _selftest():
         ("post-review c7ad8c929c2a", ["c7ad8c929c2a"]),
         ("post-review HEAD", ["HEAD"]),
         ("post-review", ["--staged"]),
-        ("git add f && git commit --amend", ["--staged"]),
+        # An amend is measured as the whole commit it produces, against HEAD^.
+        ("git add f && git commit --amend", ["--staged", "--amend"]),
         # -a stages at commit time, so nothing is staged when the hook runs.
         ("git commit -a -m x", ["--worktree"]),
         ("git commit -am x", ["--worktree"]),
         ("git commit --all -m x", ["--worktree"]),
-        ("git commit --amend -a --no-edit", ["--worktree"]),
+        ("git commit --amend -a --no-edit", ["--worktree", "--amend"]),
+        ("git commit -q -a --amend --no-edit", ["--worktree", "--amend"]),
         # -A belongs to the add, not the commit, and --amend is not --all.
         ("git add -A && git commit -m x", ["--staged"]),
-        ("git commit --amend --no-edit", ["--staged"]),
+        ("git commit --amend --no-edit", ["--staged", "--amend"]),
+        # --amend in a message or a later segment is not the commit's flag.
+        ("git commit -m 'drop --amend usage'", ["--staged"]),
+        ("git commit -m x; echo --amend", ["--staged"]),
         # An apostrophe in a heredoc body makes shlex raise; the fallback split
         # still sees -a as its own token.
         ("git commit -a -F - <<'MSG'\nthe parser's CPU\nMSG", ["--worktree"]),

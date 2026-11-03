@@ -6,6 +6,7 @@
     comment-ratio.py a7a1a28              # one commit
     comment-ratio.py --staged             # what is about to be committed
     comment-ratio.py --worktree -v        # uncommitted, listing the comments
+    comment-ratio.py --staged --amend     # the commit `git commit --amend` would make
 
 A raw comment percentage means nothing on its own: a filesystem checker's
 internals and an integration test have very different natural densities. So
@@ -393,10 +394,13 @@ def baseline_for(path, lang, base_rev, root, docstrings, cache):
 
 def resolve_range(args):
     """Return (diff_args, base_rev, new_rev, label). new_rev None = worktree."""
+    # An amend replaces HEAD, so what it produces is measured against HEAD's
+    # parent: the whole commit as amended, not the edit being folded in.
+    base = "HEAD^" if args.amend else "HEAD"
     if args.staged:
-        return ["--cached"], "HEAD", ":", "staged changes"
+        return ["--cached", base], base, ":", "staged changes vs %s" % base
     if args.worktree:
-        return ["HEAD"], "HEAD", None, "working tree vs HEAD"
+        return [base], base, None, "working tree vs %s" % base
     rev = args.revision or "HEAD"
     if ".." in rev:
         base, _, new = rev.partition("..")
@@ -578,6 +582,9 @@ def main():
                         dest="staged", help="analyze the staged changes")
     parser.add_argument("--worktree", action="store_true",
                         help="analyze uncommitted changes against HEAD")
+    parser.add_argument("--amend", action="store_true",
+                        help="with --staged or --worktree, measure against HEAD^: "
+                             "the commit an amend would produce")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="list every added comment line")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
@@ -596,6 +603,8 @@ def main():
     args = parser.parse_args()
     if args.staged and args.worktree:
         parser.error("--staged and --worktree are mutually exclusive")
+    if args.amend and not (args.staged or args.worktree):
+        parser.error("--amend needs --staged or --worktree")
 
     files, skipped, label = analyze(args)
     return report(files, skipped, label, args)
