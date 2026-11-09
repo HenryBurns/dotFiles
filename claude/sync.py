@@ -59,6 +59,7 @@ FILES = [
     # convention is company-specific, only that a name is.
     "skills/write-guard/SKILL.md",
     "skills/code-review-practice/SKILL.md",
+    "skills/code-comments/SKILL.md",
     "skills/commit-messages/SKILL.md",
     "skills/cpp-binary-size/SKILL.md",
     "skills/slack-messages/SKILL.md",
