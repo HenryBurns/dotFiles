@@ -91,6 +91,23 @@ own code, since it reports a different condition.
 A comment you are declining, or one raising a design question, earns real prose. An accepted one
 does not.
 
+### "Done." needs a suggestion to point at
+
+`Done.` only works when the reviewer named a change: "use X", "rename this", "drop that". It means
+"what you asked for is in the diff." **If the comment is an objection or a question** ("that's not
+true", "won't this break Y?", "who else uses this memory?") and **you chose the fix**, nothing was
+asked for, so `Done.` points at nothing. The reviewer has to read the diff and guess which change
+answers them.
+
+Say in a sentence or two whether they were right and what you changed:
+
+```
+You're right, it can't come up empty spuriously. Every context now exists before a lease is
+served, so Lease() pops once and asserts instead of looping.
+```
+
+Keep it short. Name the change, not how it was done.
+
 ### Check who has already replied
 
 Someone else, or an earlier session, may have answered some of the comments in between. "This review
